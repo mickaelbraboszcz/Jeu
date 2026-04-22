@@ -18,7 +18,7 @@ const MAP = {
         { id: "ROM", name: "Rome", x: 300, y: 450 },
         { id: "VIE", name: "Vienne", x: 420, y: 180 },
         { id: "AMS", name: "Amsterdam", x: 180, y: 30 }
-    ],
+    ],  
     routes: [
         { id: 1, from: "PAR", to: "LYO", distance: 3, color: "rouge" },
         { id: 2, from: "LYO", to: "MAR", distance: 2, color: "bleu" },
