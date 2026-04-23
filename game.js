@@ -59,12 +59,8 @@ const INITIALS_MAP = {
 const PLAYER_COLORS = ["#00e5ff", "#ff007a", "#39ff14", "#ffea00"]; // Cyan, Rose, Vert Néon, Jaune Néon
 
 // --- IDENTIFICATION DU JOUEUR ---
-let myPlayerId = localStorage.getItem('myPlayerId');
-if (!myPlayerId) {
-    // Génère un ID unique pour ce navigateur (ex: player_7f3g9a)
-    myPlayerId = 'player_' + Math.random().toString(36).substring(2, 9);
-    localStorage.setItem('myPlayerId', myPlayerId);
-}
+let myPlayerId = null;
+let myPlayerName = null;
 
 let gameState = {
     status: 'waiting', // 'waiting' ou 'playing'
@@ -664,9 +660,40 @@ function updateViewBox() {
     }
 }
 
+// --- AUTHENTIFICATION GOOGLE ---
+
+async function checkAuth() {
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    
+    if (session) {
+        myPlayerId = session.user.id; // L'ID ultra-sécurisé de Supabase
+        // Récupère le nom complet Google, ou l'email par défaut
+        myPlayerName = session.user.user_metadata.full_name || session.user.email.split('@')[0];
+        
+        document.getElementById('auth-section').classList.add('hidden-view');
+        document.getElementById('lobby-actions').classList.remove('hidden-view');
+        document.getElementById('user-name-display').innerText = myPlayerName;
+        showLobby();
+    } else {
+        document.getElementById('auth-section').classList.remove('hidden-view');
+        document.getElementById('lobby-actions').classList.add('hidden-view');
+    }
+}
+
+async function loginWithGoogle() {
+    await supabaseClient.auth.signInWithOAuth({
+        provider: 'google'
+    });
+}
+
+async function logout() {
+    await supabaseClient.auth.signOut();
+    window.location.reload();
+}
+
 async function initGame() {
     initMapGestures();
-    showLobby();
+    checkAuth();
 }
 
 async function showLobby() {
@@ -674,9 +701,6 @@ async function showLobby() {
     document.getElementById('game-container').classList.add('hidden-view');
     document.getElementById('waiting-room-container').classList.add('hidden-view');
     
-    const savedName = localStorage.getItem('playerName');
-    if (savedName) document.getElementById('player-name-input').value = savedName;
-
     const { data, error } = await supabaseClient
         .from('games')
         .select('id, state, created_at')
@@ -706,16 +730,13 @@ async function showLobby() {
 }
 
 async function createNewGame() {
-    const nameInput = document.getElementById('player-name-input').value.trim() || "Joueur 1";
-    localStorage.setItem('playerName', nameInput); // Se souvient du nom pour la prochaine fois
-
     gameState = {
         status: 'waiting', currentPlayer: 0, cardsDrawnThisTurn: 0,
         players: [], claimedRoutes: [], deck: [], destinationDeck: [], discardPile: [], faceUpCards: []
     };
 
     // Ajoute le créateur à la liste des joueurs
-    const creator = { id: myPlayerId, name: nameInput, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[0] };
+    const creator = { id: myPlayerId, name: myPlayerName, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[0] };
     COLORS.forEach(c => creator.cards[c] = 0);
     gameState.players.push(creator);
 
@@ -737,9 +758,6 @@ async function createNewGame() {
 }
 
 async function joinGame(id) {
-    const nameInput = document.getElementById('player-name-input').value.trim() || "Joueur 2";
-    localStorage.setItem('playerName', nameInput);
-
     const { data, error } = await supabaseClient
         .from('games')
         .select('state')
@@ -759,10 +777,7 @@ async function joinGame(id) {
         if (gameState.status === 'playing') return alert("La partie a déjà commencé, vous ne pouvez pas la rejoindre !");
         if (gameState.players.length >= 4) return alert("La partie est complète (4 joueurs max) !");
         
-        const newName = document.getElementById('player-name-input').value.trim() || `Joueur ${gameState.players.length + 1}`;
-        localStorage.setItem('playerName', newName);
-        
-        const newPlayer = { id: myPlayerId, name: newName, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[gameState.players.length] };
+        const newPlayer = { id: myPlayerId, name: myPlayerName, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[gameState.players.length] };
         COLORS.forEach(c => newPlayer.cards[c] = 0);
         
         gameState.players.push(newPlayer);

@@ -432,10 +432,19 @@ body {
 <body>
     <div id="lobby-container">
         <h1 style="text-shadow: 2px 2px 4px black;">🚂 Les Aventuriers du Rail</h1>
-        <input type="text" id="player-name-input" class="lobby-input" placeholder="Votre pseudo..." maxlength="15" />
-        <button class="lobby-btn" onclick="createNewGame()">Créer une nouvelle partie</button>
-        <div class="game-list" id="games-list">
-            <i>Chargement des parties en cours...</i>
+        
+        <!-- Section de connexion -->
+        <div id="auth-section">
+            <button class="lobby-btn" style="background: #db4437;" onclick="loginWithGoogle()">S'identifier avec Google</button>
+        </div>
+
+        <!-- Actions du salon (cachées si non connecté) -->
+        <div id="lobby-actions" class="hidden-view" style="width: 100%; display: flex; flex-direction: column; align-items: center;">
+            <p style="font-size: 18px;">Bienvenue, <b id="user-name-display" style="color: #2ecc71;"></b> ! <a href="#" onclick="logout()" style="color: #e74c3c; font-size: 14px; margin-left: 10px;">(Déconnexion)</a></p>
+            <button class="lobby-btn" onclick="createNewGame()">Créer une nouvelle partie</button>
+            <div class="game-list" id="games-list">
+                <i>Chargement des parties en cours...</i>
+            </div>
         </div>
     </div>
 
