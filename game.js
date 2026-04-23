@@ -762,7 +762,8 @@ async function showLobby() {
         
         // --- FILTRAGE DES PARTIES ---
         const visibleGames = data.filter(game => {
-                        const isWaiting = game.state.status === 'waiting';
+            const amIInThisGame = game.state.players.some(p => p.id === myPlayerId);
+            const isWaiting = game.state.status === 'waiting';
             const isNotFull = game.state.players.length < 4;
             // On affiche si on est dedans, OU (si elle est en attente ET pas pleine)
             return (amIInThisGame && game.state.status !== 'finished') || (isWaiting && isNotFull);
@@ -774,24 +775,24 @@ async function showLobby() {
             listContainer.innerHTML = visibleGames.map(game => {
                 const amIInThisGame = game.state.players.some(p => p.id === myPlayerId);
                 const nbPlayers = game.state.players.length;
-            const isPlaying = game.state.status === 'playing';
-            
-            let btnLabel = amIInThisGame ? 'Reconnecter' : (isPlaying ? 'En cours' : 'Rejoindre');
+                const isPlaying = game.state.status === 'playing';
+                
+                let btnLabel = amIInThisGame ? 'Reconnecter' : (isPlaying ? 'En cours' : 'Rejoindre');
                 
                 const gameName = game.state.name || `Partie #${game.id}`;
                 const dateStr = new Date(game.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
 
-            return `
-                <div class="game-item">
-                    <div style="display:flex; flex-direction:column; align-items:flex-start; text-align:left;">
-                        <strong>${gameName}</strong>
-                        <span style="font-size:12px; color:#bdc3c7;">Créée le ${dateStr} - ${nbPlayers}/4 joueurs</span>
+                return `
+                    <div class="game-item">
+                        <div style="display:flex; flex-direction:column; align-items:flex-start; text-align:left;">
+                            <strong>${gameName}</strong>
+                            <span style="font-size:12px; color:#bdc3c7;">Créée le ${dateStr} - ${nbPlayers}/4 joueurs</span>
+                        </div>
+                        <button onclick="joinGame(${game.id})">${btnLabel}</button>
                     </div>
-                    <button onclick="joinGame(${game.id})">${btnLabel}</button>
-                </div>
-            `;
-        }).join('');
-    }
+                `;
+            }).join('');
+        }
     }
 }
 
