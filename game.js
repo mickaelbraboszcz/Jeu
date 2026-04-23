@@ -134,6 +134,14 @@ function subscribeToGame(id) {
         });
 }
 
+function leaveGameToLobby() {
+    window.preventAutoReconnect = true; // Empêche l'auto-reconnexion pour cette session si le joueur a volontairement cliqué sur Quitter
+    if (gameChannel) supabaseClient.removeChannel(gameChannel);
+    gameChannel = null;
+    currentGameId = null;
+    showLobby();
+}
+
 // --- SYSTÈME DE MODALE ---
 
 function showModal(text, options = []) {
@@ -744,27 +752,56 @@ async function showLobby() {
     if (error || !data || data.length === 0) {
         listContainer.innerHTML = "<i>Aucune partie en cours trouvée.</i>";
     } else {
-        listContainer.innerHTML = data.map(game => {
-            const nbPlayers = game.state.players.length;
+        // --- AUTO-RECONNEXION ---
+        if (!window.preventAutoReconnect) {
+            const activeGame = data.find(g => g.state.players.some(p => p.id === myPlayerId) && g.state.status !== 'finished');
+            if (activeGame) {
+                return joinGame(activeGame.id); // Reconnecte directement et stop le chargement du lobby
+            }
+        }
+        
+        // --- FILTRAGE DES PARTIES ---
+        const visibleGames = data.filter(game => {
+                        const isWaiting = game.state.status === 'waiting';
+            const isNotFull = game.state.players.length < 4;
+            // On affiche si on est dedans, OU (si elle est en attente ET pas pleine)
+            return (amIInThisGame && game.state.status !== 'finished') || (isWaiting && isNotFull);
+        });
+        
+        if (visibleGames.length === 0) {
+            listContainer.innerHTML = "<i>Aucune partie ouverte pour le moment.</i>";
+        } else {
+            listContainer.innerHTML = visibleGames.map(game => {
+                const amIInThisGame = game.state.players.some(p => p.id === myPlayerId);
+                const nbPlayers = game.state.players.length;
             const isPlaying = game.state.status === 'playing';
             const amIInThisGame = game.state.players.some(p => p.id === myPlayerId);
             
             let btnLabel = amIInThisGame ? 'Reconnecter' : (isPlaying ? 'En cours' : 'Rejoindre');
-            let btnDisabled = (isPlaying && !amIInThisGame) ? 'disabled style="background:gray;"' : '';
+                
+                const gameName = game.state.name || `Partie #${game.id}`;
+                const dateStr = new Date(game.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
 
             return `
                 <div class="game-item">
-                    <span>Partie #${game.id} (${nbPlayers}/4)</span>
-                    <button onclick="joinGame(${game.id})" ${btnDisabled}>${btnLabel}</button>
+                    <div style="display:flex; flex-direction:column; align-items:flex-start; text-align:left;">
+                        <strong>${gameName}</strong>
+                        <span style="font-size:12px; color:#bdc3c7;">Créée le ${dateStr} - ${nbPlayers}/4 joueurs</span>
+                    </div>
+                    <button onclick="joinGame(${game.id})">${btnLabel}</button>
                 </div>
             `;
         }).join('');
     }
+    }
 }
 
 async function createNewGame() {
+       const gameNameInput = document.getElementById('game-name-input').value.trim();
+    const gameName = gameNameInput || `Partie de ${myPlayerName}`;
+
     gameState = {
-        status: 'waiting', currentPlayer: 0, cardsDrawnThisTurn: 0,
+        name: gameName, status: 'waiting', currentPlayer: 0, cardsDrawnThisTurn: 0,
         players: [], claimedRoutes: [], deck: [], destinationDeck: [], discardPile: [], faceUpCards: []
     };
 
@@ -846,7 +883,7 @@ function renderWaitingRoom() {
     document.getElementById('game-container').classList.add('hidden-view');
     document.getElementById('waiting-room-container').classList.remove('hidden-view');
     
-    document.getElementById('waiting-game-id').innerText = currentGameId;
+    document.getElementById('waiting-game-id').innerText = gameState.name || `Partie #${currentGameId}`;
     
     const listEl = document.getElementById('waiting-players-list');
     listEl.innerHTML = gameState.players.map((p, i) => {

@@ -441,6 +441,7 @@ body {
         <!-- Actions du salon (cachées si non connecté) -->
         <div id="lobby-actions" class="hidden-view" style="width: 100%; display: flex; flex-direction: column; align-items: center;">
             <p style="font-size: 18px;">Bienvenue, <b id="user-name-display" style="color: #2ecc71;"></b> ! <a href="#" onclick="logout()" style="color: #e74c3c; font-size: 14px; margin-left: 10px;">(Déconnexion)</a></p>
+            <input type="text" id="game-name-input" class="lobby-input" placeholder="Nom de la partie (Optionnel)" maxlength="30" style="margin-top: 15px;" />
             <button class="lobby-btn" onclick="createNewGame()">Créer une nouvelle partie</button>
             <div class="game-list" id="games-list">
                 <i>Chargement des parties en cours...</i>
@@ -451,15 +452,20 @@ body {
     <!-- NOUVEAU : Salon d'attente avant le début du jeu -->
     <div id="waiting-room-container" class="hidden-view" style="display:flex; flex-direction:column; align-items:center; color:white; margin-top: 10vh; width:100%;">
         <h2 style="text-shadow: 2px 2px 4px black; font-size:28px;">⏳ Salle d'attente</h2>
-        <p style="font-size:18px;">Partie #<span id="waiting-game-id" style="font-weight:bold; color:#e67e22;"></span></p>
+        <p style="font-size:18px;"><span id="waiting-game-id" style="font-weight:bold; color:#e67e22;"></span></p>
         <div id="waiting-players-list" style="background: rgba(0,0,0,0.5); padding: 20px; border-radius: 8px; width: 90%; max-width: 400px; margin: 20px 0; font-size:18px; line-height:1.8;"></div>
         <button id="start-game-btn" class="lobby-btn hidden-view" onclick="startActiveGame()"></button>
         <p id="waiting-msg" style="color: #f39c12; font-style: italic; font-size:18px; text-align:center;">En attente du créateur de la partie...</p>
+        <button onclick="leaveGameToLobby()" style="margin-top: 20px; padding: 10px 20px; background: #7f8c8d; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">⬅ Retour à l'accueil</button>
     </div>
 
     <div id="game-container" class="hidden-view">
         <div id="ui-top">
-            <div id="turn-banner"></div>
+            <div style="display: flex; justify-content: space-between; width: 100%; align-items: center; padding: 0 10px 5px 10px; box-sizing: border-box;">
+                <button onclick="leaveGameToLobby()" style="padding: 6px 12px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5); border-radius: 4px; cursor: pointer; font-weight: bold;">⬅ Quitter</button>
+                <div id="turn-banner" style="margin: 0;"></div>
+                <div style="width: 75px;"></div> <!-- Espace invisible pour centrer la bannière -->
+            </div>
             <div id="players-info-container"></div>
             <div id="missions-display">Missions secrètes du tour : <span id="current-destinations"></span></div>
         </div>
