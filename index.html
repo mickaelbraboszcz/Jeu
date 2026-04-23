@@ -439,6 +439,15 @@ body {
         </div>
     </div>
 
+    <!-- NOUVEAU : Salon d'attente avant le début du jeu -->
+    <div id="waiting-room-container" class="hidden-view" style="display:flex; flex-direction:column; align-items:center; color:white; margin-top: 10vh; width:100%;">
+        <h2 style="text-shadow: 2px 2px 4px black; font-size:28px;">⏳ Salle d'attente</h2>
+        <p style="font-size:18px;">Partie #<span id="waiting-game-id" style="font-weight:bold; color:#e67e22;"></span></p>
+        <div id="waiting-players-list" style="background: rgba(0,0,0,0.5); padding: 20px; border-radius: 8px; width: 90%; max-width: 400px; margin: 20px 0; font-size:18px; line-height:1.8;"></div>
+        <button id="start-game-btn" class="lobby-btn hidden-view" onclick="startActiveGame()"></button>
+        <p id="waiting-msg" style="color: #f39c12; font-style: italic; font-size:18px; text-align:center;">En attente du créateur de la partie...</p>
+    </div>
+
     <div id="game-container" class="hidden-view">
         <div id="ui-top">
             <div id="turn-banner"></div>

@@ -56,13 +56,21 @@ const INITIALS_MAP = {
     "noir": "N", "blanc": "Bc", "orange": "O", "rose": "Rs"
 };
 
+const PLAYER_COLORS = ["#00e5ff", "#ff007a", "#39ff14", "#ffea00"]; // Cyan, Rose, Vert Néon, Jaune Néon
+
+// --- IDENTIFICATION DU JOUEUR ---
+let myPlayerId = localStorage.getItem('myPlayerId');
+if (!myPlayerId) {
+    // Génère un ID unique pour ce navigateur (ex: player_7f3g9a)
+    myPlayerId = 'player_' + Math.random().toString(36).substring(2, 9);
+    localStorage.setItem('myPlayerId', myPlayerId);
+}
+
 let gameState = {
+    status: 'waiting', // 'waiting' ou 'playing'
     currentPlayer: 0,
     cardsDrawnThisTurn: 0, // Compte les cartes piochées pendant le tour
-    players: [
-        { name: "Joueur 1", wagons: 45, cards: {}, score: 0, destinations: [], color: "#00e5ff" }, // Cyan néon
-        { name: "Joueur 2", wagons: 45, cards: {}, score: 0, destinations: [], color: "#ff007a" }  // Rose néon
-    ],
+    players: [], // Rempli dynamiquement
     claimedRoutes: [],
     deck: [],
     destinationDeck: [],
@@ -72,11 +80,6 @@ let gameState = {
 
 let currentGameId = null;
 let localPlayerIndex = 0; // Définit si ce navigateur est le Joueur 1 (0) ou le Joueur 2 (1)
-
-// Initialisation du dictionnaire de cartes à 0 pour chaque joueur
-gameState.players.forEach(p => {
-    COLORS.forEach(c => p.cards[c] = 0);
-});
 
 // --- MULTIJOUEUR SUPABASE ---
 
@@ -669,13 +672,14 @@ async function initGame() {
 async function showLobby() {
     document.getElementById('lobby-container').classList.remove('hidden-view');
     document.getElementById('game-container').classList.add('hidden-view');
+    document.getElementById('waiting-room-container').classList.add('hidden-view');
     
     const savedName = localStorage.getItem('playerName');
     if (savedName) document.getElementById('player-name-input').value = savedName;
 
     const { data, error } = await supabaseClient
         .from('games')
-        .select('id, created_at')
+        .select('id, state, created_at')
         .order('created_at', { ascending: false })
         .limit(10);
 
@@ -683,12 +687,21 @@ async function showLobby() {
     if (error || !data || data.length === 0) {
         listContainer.innerHTML = "<i>Aucune partie en cours trouvée.</i>";
     } else {
-        listContainer.innerHTML = data.map(game => `
-            <div class="game-item">
-                <span>Partie #${game.id}</span>
-                <button onclick="joinGame(${game.id})">Rejoindre</button>
-            </div>
-        `).join('');
+        listContainer.innerHTML = data.map(game => {
+            const nbPlayers = game.state.players.length;
+            const isPlaying = game.state.status === 'playing';
+            const amIInThisGame = game.state.players.some(p => p.id === myPlayerId);
+            
+            let btnLabel = amIInThisGame ? 'Reconnecter' : (isPlaying ? 'En cours' : 'Rejoindre');
+            let btnDisabled = (isPlaying && !amIInThisGame) ? 'disabled style="background:gray;"' : '';
+
+            return `
+                <div class="game-item">
+                    <span>Partie #${game.id} (${nbPlayers}/4)</span>
+                    <button onclick="joinGame(${game.id})" ${btnDisabled}>${btnLabel}</button>
+                </div>
+            `;
+        }).join('');
     }
 }
 
@@ -696,16 +709,15 @@ async function createNewGame() {
     const nameInput = document.getElementById('player-name-input').value.trim() || "Joueur 1";
     localStorage.setItem('playerName', nameInput); // Se souvient du nom pour la prochaine fois
 
-    initDeck();
-    refillRiver();
-    initDestinations();
-    
-    gameState.players[0].name = nameInput; // Assigne le pseudo au Créateur
+    gameState = {
+        status: 'waiting', currentPlayer: 0, cardsDrawnThisTurn: 0,
+        players: [], claimedRoutes: [], deck: [], destinationDeck: [], discardPile: [], faceUpCards: []
+    };
 
-    gameState.players.forEach(p => {
-        for (let i = 0; i < 4; i++) p.cards[gameState.deck.pop()]++;
-        if(gameState.destinationDeck.length > 0) p.destinations.push(gameState.destinationDeck.pop());
-    });
+    // Ajoute le créateur à la liste des joueurs
+    const creator = { id: myPlayerId, name: nameInput, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[0] };
+    COLORS.forEach(c => creator.cards[c] = 0);
+    gameState.players.push(creator);
 
     const { data, error } = await supabaseClient
         .from('games')
@@ -716,11 +728,8 @@ async function createNewGame() {
         alert("Erreur de connexion à la base de données !");
     } else {
         localPlayerIndex = 0; // Le créateur est le Joueur 1
-        localStorage.setItem(`game_${data[0].id}_role`, 0); // On sauvegarde notre rôle
         
         currentGameId = data[0].id;
-        document.getElementById('lobby-container').classList.add('hidden-view');
-        document.getElementById('game-container').classList.remove('hidden-view');
         
         subscribeToGame(currentGameId);
         updateUI();
@@ -742,24 +751,76 @@ async function joinGame(id) {
     gameState = data.state;
     currentGameId = id;
 
-    // Récupère le rôle sauvegardé. Si aucun, on assume qu'on est le Joueur 2
-    const savedRole = localStorage.getItem(`game_${id}_role`);
-    if (savedRole !== null) {
-        localPlayerIndex = parseInt(savedRole);
-    } else {
-        localPlayerIndex = 1; // Le rejoigneur est le Joueur 2
-        localStorage.setItem(`game_${id}_role`, 1);
-            
-            // NOUVEAU : Met à jour le nom du Joueur 2 et prévient le Créateur via Supabase
-            gameState.players[1].name = nameInput;
-            await supabaseClient.from('games').update({ state: gameState }).eq('id', id);
+    // Est-ce que je suis déjà dans cette partie ?
+    localPlayerIndex = gameState.players.findIndex(p => p.id === myPlayerId);
+
+    // Si je suis un petit nouveau
+    if (localPlayerIndex === -1) {
+        if (gameState.status === 'playing') return alert("La partie a déjà commencé, vous ne pouvez pas la rejoindre !");
+        if (gameState.players.length >= 4) return alert("La partie est complète (4 joueurs max) !");
+        
+        const newName = document.getElementById('player-name-input').value.trim() || `Joueur ${gameState.players.length + 1}`;
+        localStorage.setItem('playerName', newName);
+        
+        const newPlayer = { id: myPlayerId, name: newName, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[gameState.players.length] };
+        COLORS.forEach(c => newPlayer.cards[c] = 0);
+        
+        gameState.players.push(newPlayer);
+        localPlayerIndex = gameState.players.length - 1;
+        
+        await supabaseClient.from('games').update({ state: gameState }).eq('id', id);
     }
 
-    document.getElementById('lobby-container').classList.add('hidden-view');
-    document.getElementById('game-container').classList.remove('hidden-view');
-    
     subscribeToGame(currentGameId);
     updateUI();
+}
+
+async function startActiveGame() {
+    if (gameState.players[0].id !== myPlayerId) return; // Sécurité : Seul le créateur peut lancer
+    
+    initDeck();
+    refillRiver();
+    initDestinations();
+    
+    // Distribution initiale : 4 wagons et 1 mission
+    gameState.players.forEach(p => {
+        for (let i = 0; i < 4; i++) p.cards[gameState.deck.pop()]++;
+        if(gameState.destinationDeck.length > 0) p.destinations.push(gameState.destinationDeck.pop());
+    });
+
+    gameState.status = 'playing'; // On lance la partie !
+    await saveGameState();
+    updateUI();
+}
+
+function renderWaitingRoom() {
+    document.getElementById('lobby-container').classList.add('hidden-view');
+    document.getElementById('game-container').classList.add('hidden-view');
+    document.getElementById('waiting-room-container').classList.remove('hidden-view');
+    
+    document.getElementById('waiting-game-id').innerText = currentGameId;
+    
+    const listEl = document.getElementById('waiting-players-list');
+    listEl.innerHTML = gameState.players.map((p, i) => `
+        <div style="padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.2); color: ${p.color}; font-weight: bold;">
+            ${i === 0 ? '👑 ' : '🧑‍🚀 '}${p.name} ${p.id === myPlayerId ? ' <i>(VOUS)</i>' : ''}
+        </div>
+    `).join('');
+    
+    const isCreator = (gameState.players[0].id === myPlayerId);
+    const startBtn = document.getElementById('start-game-btn');
+    const waitMsg = document.getElementById('waiting-msg');
+    
+    if (isCreator) {
+        startBtn.classList.remove('hidden-view');
+        waitMsg.classList.add('hidden-view');
+        startBtn.disabled = gameState.players.length < 2;
+        startBtn.innerText = gameState.players.length < 2 ? "En attente de joueurs... (1/4)" : "Démarrer la partie !";
+        startBtn.style.background = gameState.players.length < 2 ? "gray" : "#e67e22";
+    } else {
+        startBtn.classList.add('hidden-view');
+        waitMsg.classList.remove('hidden-view');
+    }
 }
 
 function renderMap(svg) {
@@ -803,6 +864,16 @@ function renderMap(svg) {
 }
 
 function updateUI() {
+    // Si la partie n'a pas encore commencé, on reste dans la salle d'attente
+    if (gameState.status === 'waiting') {
+        renderWaitingRoom();
+        return;
+    }
+
+    document.getElementById('waiting-room-container').classList.add('hidden-view');
+    document.getElementById('lobby-container').classList.add('hidden-view');
+    document.getElementById('game-container').classList.remove('hidden-view');
+
     const myPlayer = gameState.players[localPlayerIndex]; // Affichage spécifique à moi
     const activePlayer = gameState.players[gameState.currentPlayer];
     const isMyTurn = (localPlayerIndex === gameState.currentPlayer);
