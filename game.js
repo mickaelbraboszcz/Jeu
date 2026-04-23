@@ -670,6 +670,9 @@ async function showLobby() {
     document.getElementById('lobby-container').classList.remove('hidden-view');
     document.getElementById('game-container').classList.add('hidden-view');
     
+    const savedName = localStorage.getItem('playerName');
+    if (savedName) document.getElementById('player-name-input').value = savedName;
+
     const { data, error } = await supabaseClient
         .from('games')
         .select('id, created_at')
@@ -690,10 +693,15 @@ async function showLobby() {
 }
 
 async function createNewGame() {
+    const nameInput = document.getElementById('player-name-input').value.trim() || "Joueur 1";
+    localStorage.setItem('playerName', nameInput); // Se souvient du nom pour la prochaine fois
+
     initDeck();
     refillRiver();
     initDestinations();
     
+    gameState.players[0].name = nameInput; // Assigne le pseudo au Créateur
+
     gameState.players.forEach(p => {
         for (let i = 0; i < 4; i++) p.cards[gameState.deck.pop()]++;
         if(gameState.destinationDeck.length > 0) p.destinations.push(gameState.destinationDeck.pop());
@@ -720,6 +728,9 @@ async function createNewGame() {
 }
 
 async function joinGame(id) {
+    const nameInput = document.getElementById('player-name-input').value.trim() || "Joueur 2";
+    localStorage.setItem('playerName', nameInput);
+
     const { data, error } = await supabaseClient
         .from('games')
         .select('state')
@@ -738,6 +749,10 @@ async function joinGame(id) {
     } else {
         localPlayerIndex = 1; // Le rejoigneur est le Joueur 2
         localStorage.setItem(`game_${id}_role`, 1);
+            
+            // NOUVEAU : Met à jour le nom du Joueur 2 et prévient le Créateur via Supabase
+            gameState.players[1].name = nameInput;
+            await supabaseClient.from('games').update({ state: gameState }).eq('id', id);
     }
 
     document.getElementById('lobby-container').classList.add('hidden-view');
@@ -789,6 +804,22 @@ function renderMap(svg) {
 
 function updateUI() {
     const myPlayer = gameState.players[localPlayerIndex]; // Affichage spécifique à moi
+    const activePlayer = gameState.players[gameState.currentPlayer];
+    const isMyTurn = (localPlayerIndex === gameState.currentPlayer);
+
+    // Mise à jour de la bannière de tour et grisage de l'interface
+    const turnBanner = document.getElementById('turn-banner');
+    if (turnBanner) {
+        if (isMyTurn) {
+            turnBanner.innerText = "🟢 C'est à vous de jouer !";
+            turnBanner.className = "turn-active";
+            document.querySelector('.draw-area').classList.remove('disabled-turn');
+        } else {
+            turnBanner.innerText = "🔴 En attente de " + activePlayer.name + "...";
+            turnBanner.className = "turn-waiting";
+            document.querySelector('.draw-area').classList.add('disabled-turn');
+        }
+    }
     
     // Mise à jour des cartes d'informations des joueurs en haut
     const playersContainer = document.getElementById('players-info-container');
@@ -810,7 +841,7 @@ function updateUI() {
                 cardDiv.style.boxShadow = `0 0 15px ${p.color}80`; // Halo coloré semi-transparent
             }
 
-            let nameText = p.name;
+            let nameText = p.name + (index === localPlayerIndex ? " (VOUS)" : "");
             if (isActive && gameState.cardsDrawnThisTurn > 0) {
                 nameText += " (1 carte piochée)";
             }

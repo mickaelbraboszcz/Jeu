@@ -63,6 +63,12 @@ body {
 }
 .lobby-btn:hover { background: #d35400; transform: translateY(-2px); }
 
+.lobby-input {
+    padding: 12px; font-size: 16px; border-radius: 8px; border: 2px solid #e67e22; 
+    margin-bottom: 10px; text-align: center; width: 80%; max-width: 300px;
+    background: rgba(255,255,255,0.9); font-weight: bold; color: #2c3e50;
+}
+
 .game-list {
     background: rgba(0,0,0,0.5); padding: 20px; border-radius: 8px; 
     width: 90%; max-width: 600px; max-height: 50vh; overflow-y: auto;
@@ -161,6 +167,21 @@ body {
 
 .stat-icon {
     font-size: 12px;
+}
+
+#turn-banner {
+    font-weight: bold; font-size: 14px; padding: 5px 15px; border-radius: 20px; 
+    box-shadow: 0 2px 5px rgba(0,0,0,0.5); text-transform: uppercase;
+    margin-bottom: 5px; text-align: center; transition: all 0.3s; width: fit-content;
+}
+.turn-active { background-color: #2ecc71; color: white; animation: pulse-green 2s infinite; }
+.turn-waiting { background-color: #e74c3c; color: white; opacity: 0.8; }
+.disabled-turn { pointer-events: none; filter: grayscale(80%) brightness(70%); opacity: 0.7; transition: all 0.5s; }
+
+@keyframes pulse-green {
+    0% { box-shadow: 0 0 5px #2ecc71; }
+    50% { box-shadow: 0 0 15px #2ecc71; }
+    100% { box-shadow: 0 0 5px #2ecc71; }
 }
 
 /* Plateau */
@@ -411,6 +432,7 @@ body {
 <body>
     <div id="lobby-container">
         <h1 style="text-shadow: 2px 2px 4px black;">🚂 Les Aventuriers du Rail</h1>
+        <input type="text" id="player-name-input" class="lobby-input" placeholder="Votre pseudo..." maxlength="15" />
         <button class="lobby-btn" onclick="createNewGame()">Créer une nouvelle partie</button>
         <div class="game-list" id="games-list">
             <i>Chargement des parties en cours...</i>
@@ -419,6 +441,7 @@ body {
 
     <div id="game-container" class="hidden-view">
         <div id="ui-top">
+            <div id="turn-banner"></div>
             <div id="players-info-container"></div>
             <div id="missions-display">Missions secrètes du tour : <span id="current-destinations"></span></div>
         </div>
