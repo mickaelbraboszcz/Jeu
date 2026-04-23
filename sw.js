@@ -1,4 +1,4 @@
-const CACHE_NAME = 'aventuriers-v1';
+const CACHE_NAME = 'aventuriers-v2';
 const ASSETS_TO_CACHE = [
     './',
     './index.html',
@@ -15,11 +15,25 @@ self.addEventListener('install', event => {
     );
 });
 
+// Nettoyage des anciens caches lors de la mise à jour
+self.addEventListener('activate', event => {
+    event.waitUntil(
+        caches.keys().then(cacheNames => {
+            return Promise.all(
+                cacheNames.map(cache => {
+                    if (cache !== CACHE_NAME) return caches.delete(cache);
+                })
+            );
+        })
+    );
+});
+
 // Intercepte les requêtes pour servir le cache si possible
+// STRATÉGIE : Network First (Réseau d'abord, Cache en secours)
 self.addEventListener('fetch', event => {
     event.respondWith(
-        caches.match(event.request).then(response => {
-            return response || fetch(event.request);
+        fetch(event.request).catch(() => {
+            return caches.match(event.request);
         })
     );
 });
