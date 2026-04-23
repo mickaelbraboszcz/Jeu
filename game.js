@@ -775,7 +775,6 @@ async function showLobby() {
                 const amIInThisGame = game.state.players.some(p => p.id === myPlayerId);
                 const nbPlayers = game.state.players.length;
             const isPlaying = game.state.status === 'playing';
-            const amIInThisGame = game.state.players.some(p => p.id === myPlayerId);
             
             let btnLabel = amIInThisGame ? 'Reconnecter' : (isPlaying ? 'En cours' : 'Rejoindre');
                 
