@@ -62,6 +62,19 @@ const PLAYER_COLORS = ["#00e5ff", "#ff007a", "#39ff14", "#ffea00"]; // Cyan, Ros
 let myPlayerId = null;
 let myPlayerName = null;
 
+// --- UTILITAIRES ---
+function formatLastSeen(dateString) {
+    if (!dateString) return "Inconnue";
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMins = Math.floor((now - date) / 60000);
+    
+    if (diffMins < 1) return "à l'instant";
+    if (diffMins < 60) return `il y a ${diffMins} min`;
+    if (diffMins < 1440) return `il y a ${Math.floor(diffMins/60)} h`;
+    return date.toLocaleDateString();
+}
+
 let gameState = {
     status: 'waiting', // 'waiting' ou 'playing'
     currentPlayer: 0,
@@ -77,6 +90,9 @@ let gameState = {
 let currentGameId = null;
 let localPlayerIndex = 0; // Définit si ce navigateur est le Joueur 1 (0) ou le Joueur 2 (1)
 
+let gameChannel = null;
+let onlinePlayers = {}; // Stocke les ID des joueurs actuellement connectés
+
 // --- MULTIJOUEUR SUPABASE ---
 
 async function saveGameState() {
@@ -90,16 +106,32 @@ async function saveGameState() {
 }
 
 function subscribeToGame(id) {
-    supabaseClient
-        .channel('partie-' + id)
+    if (gameChannel) {
+        supabaseClient.removeChannel(gameChannel);
+    }
+
+    // On crée un canal spécial "Presence" basé sur notre ID de joueur
+    gameChannel = supabaseClient.channel('partie-' + id, {
+        config: { presence: { key: myPlayerId } }
+    });
+
+    gameChannel
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games', filter: 'id=eq.' + id }, payload => {
             console.log("Mise à jour reçue de l'adversaire !");
             gameState = payload.new.state;
-            
-            // Met à jour l'écran immédiatement avec les nouvelles données
             updateUI(); 
         })
-        .subscribe();
+        .on('presence', { event: 'sync' }, () => {
+            // Met à jour la liste des personnes en ligne dès que quelqu'qu'un arrive ou part
+            const newState = gameChannel.presenceState();
+            onlinePlayers = {};
+            for (const userId in newState) onlinePlayers[userId] = true;
+            updateUI();
+        })
+        .subscribe(async (status) => {
+            // Quand on est bien connecté, on annonce notre présence aux autres
+            if (status === 'SUBSCRIBED') await gameChannel.track({ online: true });
+        });
 }
 
 // --- SYSTÈME DE MODALE ---
@@ -431,6 +463,7 @@ function drawFromRiver(index, event) {
 
 function endTurn() {
     gameState.cardsDrawnThisTurn = 0;
+    gameState.players[gameState.currentPlayer].lastConnection = new Date().toISOString(); // Met à jour la dernière action du joueur
     gameState.currentPlayer = (gameState.currentPlayer + 1) % gameState.players.length; // Passe au joueur suivant
     saveGameState(); // Sauvegarde finale à la fin du tour complet
     updateUI();
@@ -736,7 +769,7 @@ async function createNewGame() {
     };
 
     // Ajoute le créateur à la liste des joueurs
-    const creator = { id: myPlayerId, name: myPlayerName, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[0] };
+    const creator = { id: myPlayerId, name: myPlayerName, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[0], lastConnection: new Date().toISOString() };
     COLORS.forEach(c => creator.cards[c] = 0);
     gameState.players.push(creator);
 
@@ -777,7 +810,7 @@ async function joinGame(id) {
         if (gameState.status === 'playing') return alert("La partie a déjà commencé, vous ne pouvez pas la rejoindre !");
         if (gameState.players.length >= 4) return alert("La partie est complète (4 joueurs max) !");
         
-        const newPlayer = { id: myPlayerId, name: myPlayerName, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[gameState.players.length] };
+        const newPlayer = { id: myPlayerId, name: myPlayerName, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[gameState.players.length], lastConnection: new Date().toISOString() };
         COLORS.forEach(c => newPlayer.cards[c] = 0);
         
         gameState.players.push(newPlayer);
@@ -816,11 +849,16 @@ function renderWaitingRoom() {
     document.getElementById('waiting-game-id').innerText = currentGameId;
     
     const listEl = document.getElementById('waiting-players-list');
-    listEl.innerHTML = gameState.players.map((p, i) => `
-        <div style="padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.2); color: ${p.color}; font-weight: bold;">
-            ${i === 0 ? '👑 ' : '🧑‍🚀 '}${p.name} ${p.id === myPlayerId ? ' <i>(VOUS)</i>' : ''}
-        </div>
-    `).join('');
+    listEl.innerHTML = gameState.players.map((p, i) => {
+        const isOnline = onlinePlayers[p.id];
+        const onlineIcon = isOnline ? "🟢" : "🔴";
+        const lastSeenText = (!isOnline && p.lastConnection) ? ` <span style="font-size:12px; color:#ccc; font-weight:normal;">(Vu: ${formatLastSeen(p.lastConnection)})</span>` : '';
+        return `
+            <div style="padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.2); color: ${p.color}; font-weight: bold;">
+                ${onlineIcon} ${i === 0 ? '👑 ' : '🧑‍🚀 '}${p.name} ${p.id === myPlayerId ? ' <i>(VOUS)</i>' : ''}${lastSeenText}
+            </div>
+        `;
+    }).join('');
     
     const isCreator = (gameState.players[0].id === myPlayerId);
     const startBtn = document.getElementById('start-game-btn');
@@ -932,8 +970,13 @@ function updateUI() {
                 nameText += " (1 carte piochée)";
             }
 
+            const isOnline = onlinePlayers[p.id];
+            const onlineIcon = isOnline ? "🟢" : "🔴";
+            const lastSeenText = (!isOnline && p.lastConnection) ? `<div style="font-size:9px; color:#bdc3c7; margin-top:-5px; margin-bottom:4px; font-weight:normal; line-height: 1;">Vu: ${formatLastSeen(p.lastConnection)}</div>` : '';
+
             cardDiv.innerHTML = `
-                <div class="player-name" ${isActive ? `style="color: ${p.color};"` : ''}>${nameText}</div>
+                <div class="player-name" ${isActive ? `style="color: ${p.color};"` : ''}>${onlineIcon} ${nameText}</div>
+                ${lastSeenText}
                 <div class="player-stats">
                     <div class="stat-item" title="Score"><span class="stat-icon">⭐</span><span class="stat-value">${p.score}</span></div>
                     <div class="stat-item" title="Wagons restants"><span class="stat-icon">🚂</span><span class="stat-value">${p.wagons}</span></div>
