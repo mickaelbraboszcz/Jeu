@@ -1,7 +1,10 @@
-const CACHE_NAME = 'aventuriers-v2';
+const CACHE_NAME = 'aventuriers-v4';
 const ASSETS_TO_CACHE = [
     './',
     './index.html',
+    './style.css',
+    './data.js',
+    './ui.js',
     './game.js',
     './manifest.json'
 ];

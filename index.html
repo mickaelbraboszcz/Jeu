@@ -5,430 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="theme-color" content="#2c3e50">
     <link rel="manifest" href="manifest.json">
+    <link rel="stylesheet" href="style.css">
 </head>
-<style>
-    /* Fond du jeu */
-#map-svg {
-    filter: drop-shadow(0px 5px 15px rgba(0,0,0,0.3));
-    border-radius: 8px;
-}
-
-/* Style des wagons */
-.wagon-unit {
-    stroke: rgba(0, 0, 0, 0.4);
-    stroke-width: 1.5;
-    transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-}
-
-.route-group:hover .wagon-unit {
-    stroke: white;
-    filter: brightness(1.2);
-}
-
-/* Style visuel des Tunnels */
-.tunnel-wagon {
-    stroke-dasharray: 4, 3; /* Effet de pointillés */
-}
-
-body {
-    margin: 0;
-    background-color: #2c3e50;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    overflow: hidden; /* Empêche le scroll sur mobile */
-    overscroll-behavior: none; /* Empêche le "pull-to-refresh" (glisser vers le bas pour actualiser) */
-}
-
-#game-container {
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    height: 100dvh; /* Utilise la hauteur dynamique (gère la barre d'adresse mobile) */
-    align-items: center;
-}
-
-/* Écran d'accueil (Lobby) */
-#lobby-container {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    color: white;
-    margin-top: 10vh;
-    width: 100%;
-}
-
-.lobby-btn {
-    padding: 15px 30px; background: #e67e22; color: white; border: none;
-    border-radius: 8px; cursor: pointer; font-size: 18px; margin: 20px;
-    font-weight: bold; box-shadow: 0 4px 10px rgba(0,0,0,0.5);
-}
-.lobby-btn:hover { background: #d35400; transform: translateY(-2px); }
-
-.lobby-input {
-    padding: 12px; font-size: 16px; border-radius: 8px; border: 2px solid #e67e22; 
-    margin-bottom: 10px; text-align: center; width: 80%; max-width: 300px;
-    background: rgba(255,255,255,0.9); font-weight: bold; color: #2c3e50;
-}
-
-.game-list {
-    background: rgba(0,0,0,0.5); padding: 20px; border-radius: 8px; 
-    width: 90%; max-width: 600px; max-height: 50vh; overflow-y: auto;
-}
-
-.game-item {
-    display: flex; justify-content: space-between; align-items: center;
-    background: rgba(255,255,255,0.1); padding: 15px; margin-bottom: 10px; 
-    border-radius: 8px;
-}
-.game-item button { 
-    padding: 8px 15px; background: #2ecc71; border: none; color: white; 
-    cursor: pointer; border-radius: 4px; font-weight: bold;
-}
-.game-item button:hover { background: #27ae60; }
-
-/* Header Score */
-#ui-top {
-    background: rgba(0,0,0,0.6);
-    color: white;
-    width: 100%;
-    padding: 10px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 10px;
-    backdrop-filter: blur(5px);
-    box-sizing: border-box;
-}
-
-#players-info-container {
-    display: flex;
-    justify-content: center;
-    width: 100%;
-    max-width: 900px;
-    gap: 5px; /* Écart réduit pour petits écrans */
-    flex-wrap: wrap; /* Permet le retour à la ligne si l'écran est vraiment minuscule */
-}
-
-.player-info-card {
-    background: rgba(255, 255, 255, 0.1);
-    border: 2px solid transparent;
-    border-radius: 8px;
-    padding: 6px;
-    flex: 1;
-    min-width: 75px; /* Garantit qu'on puisse en mettre 4 sur mobile */
-    max-width: 140px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-    opacity: 0.5; /* Assombri si ce n'est pas son tour */
-}
-
-.player-info-card.active {
-    background: rgba(255, 255, 255, 0.2);
-    transform: scale(1.05);
-    opacity: 1;
-    z-index: 10;
-}
-
-.player-name {
-    font-size: 13px;
-    font-weight: bold;
-    margin-bottom: 6px;
-    color: white;
-    text-shadow: 1px 1px 2px black;
-    text-align: center;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis; /* Ajoute "..." si le nom est trop long */
-    width: 100%;
-}
-
-.player-stats {
-    display: grid;
-    grid-template-columns: 1fr 1fr; /* Disposition en 2 colonnes x 2 lignes */
-    gap: 4px 8px;
-    width: 100%;
-    justify-content: center;
-}
-
-.stat-item {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 3px;
-}
-
-.stat-value {
-    font-weight: bold;
-    font-size: 13px;
-    text-shadow: 1px 1px 1px black;
-    color: white;
-}
-
-.stat-icon {
-    font-size: 12px;
-}
-
-#turn-banner {
-    font-weight: bold; font-size: 14px; padding: 5px 15px; border-radius: 20px; 
-    box-shadow: 0 2px 5px rgba(0,0,0,0.5); text-transform: uppercase;
-    margin-bottom: 5px; text-align: center; transition: all 0.3s; width: fit-content;
-}
-.turn-active { background-color: #2ecc71; color: white; animation: pulse-green 2s infinite; }
-.turn-waiting { background-color: #e74c3c; color: white; opacity: 0.8; }
-.disabled-turn { pointer-events: none; filter: grayscale(80%) brightness(70%); opacity: 0.7; transition: all 0.5s; }
-
-@keyframes pulse-green {
-    0% { box-shadow: 0 0 5px #2ecc71; }
-    50% { box-shadow: 0 0 15px #2ecc71; }
-    100% { box-shadow: 0 0 5px #2ecc71; }
-}
-
-/* Plateau */
-#map-svg {
-    flex-grow: 1;
-    width: 95%;
-    max-height: 60vh;
-    margin: 10px 0;
-    box-shadow: 0px 10px 20px rgba(0,0,0,0.5); /* Ultra-fluide sur mobile contrairement à 'filter' */
-    border-radius: 15px;
-    background-color: #f0e6d2;
-    touch-action: none; /* Empêche le défilement de la page sur mobile */
-    cursor: grab;
-}
-
-#map-svg:active {
-    cursor: grabbing;
-}
-
-/* Zone des cartes */
-#ui-bottom {
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-end; /* Plaque tout en bas de l'écran */
-    background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
-}
-
-.hand-container {
-    display: flex;
-    justify-content: center;
-    width: 100%;
-    height: 60px; /* Laisse dépasser les cartes vers le bas pour n'en voir que la moitié */
-    perspective: 1000px;
-}
-
-/* Style des cartes */
-.card-visual {
-    width: 70px;
-    height: 100px;
-    border-radius: 8px;
-    margin-left: -30px; /* Chevauchement */
-    border: 2px solid white;
-    box-shadow: 0 4px 10px rgba(0,0,0,0.5);
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-weight: bold;
-    color: white;
-    text-shadow: 1px 1px 2px black;
-    transition: transform 0.3s ease, margin 0.3s ease;
-    cursor: pointer;
-}
-
-.card-visual:first-child { margin-left: 0; }
-
-.card-visual:hover {
-    transform: translateY(-40px) scale(1.1) !important; /* Fait jaillir la carte quand on la touche */
-    z-index: 100;
-}
-
-/* Zone de pioche et rivière */
-.draw-area {
-    display: flex;
-    gap: 15px;
-    margin-top: 15px;
-    align-items: center;
-}
-
-.river-container {
-    display: flex;
-    gap: 10px;
-}
-
-.river-card {
-    margin-left: 0; /* Empêche le chevauchement qui n'existe que dans la main */
-    transform: none !important;
-}
-.river-card:hover {
-    transform: translateY(-10px) !important;
-    box-shadow: 0 0 15px gold;
-}
-
-.deck-card {
-    background: repeating-linear-gradient(45deg, #2c3e50, #2c3e50 10px, #34495e 10px, #34495e 20px);
-    margin-left: 0;
-    transform: none !important;
-    font-size: 14px;
-    text-align: center;
-}
-.deck-card:hover {
-    transform: translateY(-5px) !important;
-    box-shadow: 0 0 15px white;
-}
-
-.loco-card {
-    background: linear-gradient(135deg, red, orange, yellow, green, blue, purple);
-    color: white;
-    text-shadow: 1px 1px 2px black;
-}
-
-.dest-card {
-    background: linear-gradient(135deg, #e67e22, #f39c12);
-    color: white;
-    font-size: 14px;
-    text-align: center;
-    text-shadow: 1px 1px 2px black;
-}
-.dest-card:hover {
-    transform: translateY(-5px) !important;
-    box-shadow: 0 0 15px #f39c12;
-}
-
-.mission-item {
-    background: #f1c40f;
-    color: #2c3e50;
-    padding: 3px 8px;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: bold;
-    display: inline-block;
-    margin: 2px;
-    border: 1px solid #d35400;
-}
-
-.disabled-card {
-    filter: grayscale(100%) brightness(60%);
-    cursor: not-allowed !important;
-    transform: none !important;
-    box-shadow: none !important;
-    opacity: 0.8;
-}
-
-.discard-card {
-    background: #7f8c8d;
-    border: 2px dashed #bdc3c7;
-    cursor: default;
-}
-
-/* Ligne de mission à vol d'oiseau */
-.mission-line {
-    stroke: #e67e22; /* Orange rappelant les cartes destination */
-    stroke-width: 3;
-    stroke-dasharray: 8, 8;
-    opacity: 0.6;
-    pointer-events: none; /* Crucial : ne bloque pas les clics sur les routes en dessous */
-    animation: dash-move 20s linear infinite;
-    stroke-linecap: round;
-}
-
-@keyframes dash-move {
-    to { stroke-dashoffset: -1000; }
-}
-
-/* Filtre de halo doré */
-.highlight-route {
-    filter: drop-shadow(0 0 8px gold) drop-shadow(0 0 3px yellow);
-    cursor: pointer;
-}
-
-/* Animation de pulsation pour les routes jouables */
-.playable-pulse {
-    animation: pulse-gold 2s infinite;
-}
-
-@keyframes pulse-gold {
-    0% { filter: drop-shadow(0 0 2px gold); }
-    50% { filter: drop-shadow(0 0 12px gold); }
-    100% { filter: drop-shadow(0 0 2px gold); }
-}
-
-/* Système de Modale personnalisée */
-.modal-overlay {
-    position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-    background: rgba(0, 0, 0, 0.7); z-index: 1000;
-    display: flex; justify-content: center; align-items: center;
-    backdrop-filter: blur(3px);
-}
-.modal-overlay.hidden { display: none; }
-.modal-box {
-    background: white; padding: 25px; border-radius: 12px;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.8);
-    text-align: center; max-width: 450px; width: 90%;
-}
-#modal-text {
-    font-size: 18px; margin-bottom: 25px; color: #2c3e50; font-weight: bold;
-    white-space: pre-line; /* Permet les retours à la ligne \n */
-}
-.modal-options {
-    display: flex; justify-content: center; gap: 10px; flex-wrap: wrap;
-}
-.modal-btn {
-    padding: 10px 20px; background: #3498db; color: white; border: none;
-    border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 14px;
-    transition: background 0.2s, transform 0.1s;
-}
-.modal-btn:hover { background: #2980b9; transform: translateY(-2px); }
-.modal-btn.cancel { background: #e74c3c; }
-.modal-btn.cancel:hover { background: #c0392b; }
-.modal-btn.disabled { background: #95a5a6; cursor: not-allowed; transform: none; }
-
-.color-btn {
-    width: 45px; height: 45px; border-radius: 8px; border: 3px solid #34495e;
-    cursor: pointer; transition: transform 0.2s; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-}
-.color-btn:hover { transform: scale(1.15) translateY(-5px); }
-.color-btn.locomotive-btn {
-    background: linear-gradient(135deg, red, orange, yellow, green, blue, purple);
-    color: white; font-weight: bold; line-height: 39px; text-shadow: 1px 1px black;
-}
-
-.hidden-view {
-    display: none !important;
-}
-
-/* --- RESPONSIVE DESIGN (SMARTPHONES) --- */
-@media (max-width: 600px) {
-    .card-visual {
-        width: 42px;
-        height: 62px;
-        font-size: 11px;
-        margin-left: -20px; /* Rapproche les cartes dans la main */
-    }
-    .draw-area {
-        flex-wrap: wrap; /* Permet à la rivière de passer à la ligne */
-        justify-content: center;
-        gap: 6px;
-        margin-top: 2px;
-        margin-bottom: 5px;
-    }
-    .river-container {
-        gap: 5px;
-    }
-    .hand-container {
-        height: 35px; /* La moitié de la taille de la carte sur mobile */
-    }
-    #map-svg {
-        width: 100%; /* Prend toute la largeur de l'écran en portrait */
-        border-radius: 0; /* Plus esthétique sur les bords */
-        margin: 5px 0;
-        max-height: 45vh; /* Laisse assez de place pour que la zone de pioche s'empile */
-    }
-}
-
-</style>
 <body>
     <div id="lobby-container">
         <h1 style="text-shadow: 2px 2px 4px black;">🚂 Les Aventuriers du Rail</h1>
@@ -451,20 +29,39 @@ body {
 
     <!-- NOUVEAU : Salon d'attente avant le début du jeu -->
     <div id="waiting-room-container" class="hidden-view" style="display:flex; flex-direction:column; align-items:center; color:white; margin-top: 10vh; width:100%;">
+        <div style="width: 100%; display: flex; justify-content: flex-end; padding-right: 20px; box-sizing: border-box; margin-top: -10px;">
+            <button onclick="toggleChatMenu()" style="padding: 8px 15px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5); border-radius: 4px; cursor: pointer; font-weight: bold; position: relative;">
+                💬 Chat
+                <span id="chat-badge-lobby" class="history-badge-alert hidden-view"></span>
+            </button>
+        </div>
         <h2 style="text-shadow: 2px 2px 4px black; font-size:28px;">⏳ Salle d'attente</h2>
         <p style="font-size:18px;"><span id="waiting-game-id" style="font-weight:bold; color:#e67e22;"></span></p>
         <div id="waiting-players-list" style="background: rgba(0,0,0,0.5); padding: 20px; border-radius: 8px; width: 90%; max-width: 400px; margin: 20px 0; font-size:18px; line-height:1.8;"></div>
         <button id="start-game-btn" class="lobby-btn hidden-view" onclick="startActiveGame()"></button>
         <p id="waiting-msg" style="color: #f39c12; font-style: italic; font-size:18px; text-align:center;">En attente du créateur de la partie...</p>
+        <button id="dev-add-player-btn" onclick="debugAddPlayer()" class="hidden-view" style="margin-top: 10px; padding: 5px 10px; background: #8e44ad; color: white; border: none; border-radius: 8px; cursor: pointer;">🛠 Dev : Ajouter un bot</button>
         <button onclick="leaveGameToLobby()" style="margin-top: 20px; padding: 10px 20px; background: #7f8c8d; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">⬅ Retour à l'accueil</button>
     </div>
 
     <div id="game-container" class="hidden-view">
         <div id="ui-top">
             <div style="display: flex; justify-content: space-between; width: 100%; align-items: center; padding: 0 10px 5px 10px; box-sizing: border-box;">
-                <button onclick="leaveGameToLobby()" style="padding: 6px 12px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5); border-radius: 4px; cursor: pointer; font-weight: bold;">⬅ Quitter</button>
-                <div id="turn-banner" style="margin: 0;"></div>
-                <div style="width: 75px;"></div> <!-- Espace invisible pour centrer la bannière -->
+                <div style="display: flex; gap: 5px; flex: 1;">
+                    <button onclick="leaveGameToLobby()" style="padding: 6px 12px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5); border-radius: 4px; cursor: pointer; font-weight: bold;">⬅ Quitter</button>
+                    <button id="dev-switch-btn" onclick="debugSwitchPlayer()" class="hidden-view" style="padding: 6px 12px; background: #8e44ad; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">🔄 Vue</button>
+                </div>
+                <div id="turn-banner" style="margin: 0; flex-shrink: 0;"></div>
+                <div style="display: flex; gap: 5px; flex: 1; justify-content: flex-end;">
+                    <button onclick="toggleChatMenu()" style="padding: 6px 12px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5); border-radius: 4px; cursor: pointer; font-weight: bold; position: relative;">
+                        💬 Chat
+                        <span id="chat-badge-game" class="history-badge-alert hidden-view"></span>
+                    </button>
+                    <button onclick="toggleHistoryMenu()" style="padding: 6px 12px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5); border-radius: 4px; cursor: pointer; font-weight: bold; position: relative;">
+                        📜 Log
+                        <span id="history-badge" class="history-badge-alert hidden-view"></span>
+                    </button>
+                </div>
             </div>
             <div id="players-info-container"></div>
             <div id="missions-display">Missions secrètes du tour : <span id="current-destinations"></span></div>
@@ -484,6 +81,28 @@ body {
         </div>
     </div>
   
+    <!-- Menu Latéral Chat -->
+    <div id="chat-sidebar">
+        <div class="history-header" style="border-bottom-color: #3498db;">
+            <h3>💬 Chat de partie</h3>
+            <button class="history-close-btn" onclick="toggleChatMenu()">✖</button>
+        </div>
+        <div id="chat-content"></div>
+        <div class="chat-input-area">
+            <input type="text" id="chat-input" placeholder="Votre message..." onkeypress="if(event.key === 'Enter') sendChatMessage(event)">
+            <button onclick="sendChatMessage()">Envoyer</button>
+        </div>
+    </div>
+
+    <!-- Menu Latéral Historique -->
+    <div id="history-sidebar">
+        <div class="history-header">
+            <h3>📜 Historique d'actions</h3>
+            <button class="history-close-btn" onclick="toggleHistoryMenu()">✖</button>
+        </div>
+        <div id="history-content"></div>
+    </div>
+
     <!-- Boîte de dialogue Modale -->
     <div id="custom-modal" class="modal-overlay hidden">
         <div class="modal-box">
@@ -492,8 +111,13 @@ body {
         </div>
     </div>
 
+    <!-- Conteneur pour les notifications (Toasts) -->
+    <div id="toast-container"></div>
+
     <!-- Importation de Supabase via CDN -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="data.js"></script>
+    <script src="ui.js"></script>
     <script src="game.js"></script>
 
     <!-- Enregistrement du Service Worker pour la PWA -->

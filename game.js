@@ -1,84 +1,15 @@
-// --- CONFIGURATION SUPABASE ---
-// Remplace ces deux valeurs par celles trouvées à l'Étape 1
-const SUPABASE_URL = 'https://xzdvjhukkclqbhkutihf.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh6ZHZqaHVra2NscWJoa3V0aWhmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3ODMzMjUsImV4cCI6MjA5MjM1OTMyNX0.o1DYkGIN4P0YNrrmUbFHJy8smGnXz6eP8DJcL8ZnRzQ';
-
-const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-// --- DONNÉES STATIQUES ---
-const MAP = {
-    villes: [
-        { id: "PAR", name: "Paris", x: 150, y: 100 },
-        { id: "LYO", name: "Lyon", x: 180, y: 250 },
-        { id: "MAR", name: "Marseille", x: 200, y: 400 },
-        { id: "LON", name: "Londres", x: 100, y: 30 },
-        { id: "FRA", name: "Francfort", x: 280, y: 90 },
-        { id: "MAD", name: "Madrid", x: 50, y: 380 },
-        { id: "BER", name: "Berlin", x: 380, y: 50 },
-        { id: "ROM", name: "Rome", x: 300, y: 450 },
-        { id: "VIE", name: "Vienne", x: 420, y: 180 },
-        { id: "AMS", name: "Amsterdam", x: 180, y: 30 }
-    ],  
-    routes: [
-        { id: 1, from: "PAR", to: "LYO", distance: 3, color: "rouge" },
-        { id: 2, from: "LYO", to: "MAR", distance: 2, color: "bleu" },
-        { id: 3, from: "PAR", to: "LON", distance: 2, color: "gris", isTunnel: true },
-        { id: 4, from: "PAR", to: "FRA", distance: 3, color: "orange" },
-        { id: 5, from: "LYO", to: "FRA", distance: 4, color: "gris" },
-        { id: 6, from: "PAR", to: "MAD", distance: 4, color: "rose" },
-        { id: 7, from: "MAR", to: "ROM", distance: 4, color: "jaune" },
-        { id: 8, from: "FRA", to: "BER", distance: 3, color: "noir" },
-        { id: 9, from: "BER", to: "VIE", distance: 3, color: "vert" },
-        { id: 10, from: "FRA", to: "VIE", distance: 4, color: "orange" },
-        { id: 11, from: "PAR", to: "AMS", distance: 3, color: "gris" },
-        { id: 12, from: "AMS", to: "FRA", distance: 2, color: "blanc" }
-    ]
-};
-
-const DESTINATIONS_DATA = [
-    { id: "D1", from: "PAR", to: "ROM", points: 8 },
-    { id: "D2", from: "LON", to: "VIE", points: 10 },
-    { id: "D3", from: "MAD", to: "BER", points: 15 },
-    { id: "D4", from: "AMS", to: "MAR", points: 9 },
-    { id: "D5", from: "PAR", to: "MAD", points: 6 }
-];
-
-const COLORS = ["rouge", "bleu", "vert", "jaune", "noir", "blanc", "orange", "rose", "locomotive"];
-
-const COLOR_MAP = {
-    "rouge": "#e74c3c", "bleu": "#3498db", "vert": "#2ecc71", 
-    "jaune": "#f1c40f", "noir": "#2c3e50", "blanc": "#ecf0f1", 
-    "orange": "#e67e22", "rose": "#fd79a8"
-};
-
-const INITIALS_MAP = {
-    "rouge": "R", "bleu": "B", "vert": "V", "jaune": "J", 
-    "noir": "N", "blanc": "Bc", "orange": "O", "rose": "Rs"
-};
-
-const PLAYER_COLORS = ["#00e5ff", "#ff007a", "#39ff14", "#ffea00"]; // Cyan, Rose, Vert Néon, Jaune Néon
-
 // --- IDENTIFICATION DU JOUEUR ---
 let myPlayerId = null;
 let myPlayerName = null;
-
-// --- UTILITAIRES ---
-function formatLastSeen(dateString) {
-    if (!dateString) return "Inconnue";
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMins = Math.floor((now - date) / 60000);
-    
-    if (diffMins < 1) return "à l'instant";
-    if (diffMins < 60) return `il y a ${diffMins} min`;
-    if (diffMins < 1440) return `il y a ${Math.floor(diffMins/60)} h`;
-    return date.toLocaleDateString();
-}
+let myAvatarUrl = null;
 
 let gameState = {
     status: 'waiting', // 'waiting' ou 'playing'
     currentPlayer: 0,
+    turnCount: 1, // Compteur du nombre de tours global
     cardsDrawnThisTurn: 0, // Compte les cartes piochées pendant le tour
+    history: [], // Stocke les logs d'actions
+    chat: [], // Stocke les messages textuels
     players: [], // Rempli dynamiquement
     claimedRoutes: [],
     deck: [],
@@ -118,8 +49,33 @@ function subscribeToGame(id) {
     gameChannel
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games', filter: 'id=eq.' + id }, payload => {
             console.log("Mise à jour reçue de l'adversaire !");
+            
+            // On mémorise la date du dernier log AVANT la mise à jour
+            const oldHistory = gameState.history || [];
+            const lastOldTime = oldHistory.length > 0 ? oldHistory[oldHistory.length - 1].timestamp : "2000-01-01";
+            
+            const oldChat = gameState.chat || [];
+            const lastOldChatTime = oldChat.length > 0 ? oldChat[oldChat.length - 1].timestamp : "2000-01-01";
+            
             gameState = payload.new.state;
-            updateUI(); 
+            
+            // On cherche toutes les actions plus récentes que notre ancienne date
+            const newHistory = gameState.history || [];
+            const newItems = newHistory.filter(item => item.timestamp > lastOldTime);
+            
+            // On affiche un toast pour chaque nouvelle action qui ne vient pas de nous
+            newItems.forEach(item => {
+                if (item.player !== localPlayerIndex) showToastFromHistory(item);
+            });
+
+            // Idem pour le chat
+            const newChat = gameState.chat || [];
+            const newChatItems = newChat.filter(item => item.timestamp > lastOldChatTime);
+            newChatItems.forEach(item => {
+                if (item.player !== localPlayerIndex) showToastFromChat(item);
+            });
+            
+            updateUI();
         })
         .on('presence', { event: 'sync' }, () => {
             // Met à jour la liste des personnes en ligne dès que quelqu'qu'un arrive ou part
@@ -142,153 +98,54 @@ function leaveGameToLobby() {
     showLobby();
 }
 
-// --- SYSTÈME DE MODALE ---
+// --- HISTORIQUE (LOGS) ---
 
-function showModal(text, options = []) {
-    return new Promise(resolve => {
-        const modal = document.getElementById('custom-modal');
-        const textEl = document.getElementById('modal-text');
-        const optionsEl = document.getElementById('modal-options');
+function addHistory(actionPayload, playerIndex) {
+    if (!gameState.history) gameState.history = [];
 
-        textEl.innerText = text;
-        optionsEl.innerHTML = '';
-
-        // Si aucun bouton n'est défini, on met un bouton OK classique
-        if (options.length === 0) {
-            options = [{ label: "OK", value: true }];
-        }
-
-        options.forEach(opt => {
-            const btn = document.createElement('div');
-            
-            if (opt.type === 'color') {
-                btn.className = 'color-btn';
-                btn.style.backgroundColor = COLOR_MAP[opt.value] || opt.value;
-            } else {
-                btn.className = `modal-btn ${opt.class || ''}`;
-                btn.innerText = opt.label;
-            }
-
-            btn.onclick = () => {
-                modal.classList.add('hidden');
-                resolve(opt.value);
-            };
-            
-            optionsEl.appendChild(btn);
-        });
-
-        modal.classList.remove('hidden');
-    });
-}
-
-// Modale spéciale pour choisir 1 à 3 cartes
-function showMultiSelectModal(text, items, minSelect) {
-    return new Promise(resolve => {
-        const modal = document.getElementById('custom-modal');
-        const textEl = document.getElementById('modal-text');
-        const optionsEl = document.getElementById('modal-options');
-
-        textEl.innerText = text;
-        optionsEl.innerHTML = '';
-
-        let selected = new Set();
-
-        items.forEach(item => {
-            const btn = document.createElement('div');
-            btn.className = `modal-btn ${item.class || ''}`;
-            btn.style.display = 'block';
-            btn.style.width = '100%';
-            btn.style.marginBottom = '8px';
-            btn.innerText = item.label;
-            btn.style.opacity = "0.6";
-            btn.style.background = "#bdc3c7";
-            
-            btn.onclick = () => {
-                if (selected.has(item.value)) {
-                    selected.delete(item.value);
-                    btn.style.opacity = "0.6"; btn.style.background = "#bdc3c7";
-                } else {
-                    selected.add(item.value);
-                    btn.style.opacity = "1"; btn.style.background = "#2ecc71";
-                }
-                validateBtn.disabled = selected.size < minSelect;
-                validateBtn.className = selected.size < minSelect ? "modal-btn disabled" : "modal-btn";
-            };
-            optionsEl.appendChild(btn);
-        });
-
-        const validateBtn = document.createElement('button');
-        validateBtn.className = "modal-btn disabled";
-        validateBtn.innerText = "Valider (" + minSelect + " min)";
-        validateBtn.disabled = true;
-        validateBtn.style.marginTop = "15px";
-        validateBtn.onclick = () => {
-            if (selected.size >= minSelect) {
-                modal.classList.add('hidden');
-                resolve(Array.from(selected));
-            }
-        };
-        optionsEl.appendChild(validateBtn);
-
-        modal.classList.remove('hidden');
-    });
-}
-
-// --- ANIMATIONS VISUELLES ---
-
-function animateFlyingCard(sourceEl, targetEl, color) {
-    if (!sourceEl || !targetEl) return;
-    
-    const startRect = sourceEl.getBoundingClientRect();
-    const endRect = targetEl.getBoundingClientRect();
-
-    // Création de la carte fantôme
-    const ghost = document.createElement('div');
-    ghost.className = 'card-visual';
-    
-    if (color === 'deck') {
-        ghost.classList.add('deck-card');
-        ghost.innerText = 'Pioche';
-    } else if (color === 'dest') {
-        ghost.classList.add('dest-card');
-        ghost.innerText = 'Missions';
-    } else if (color === 'locomotive') {
-        ghost.classList.add('loco-card');
-        ghost.innerText = 'J';
-    } else {
-        ghost.style.backgroundColor = COLOR_MAP[color] || color;
-        ghost.innerText = INITIALS_MAP[color] || color.charAt(0).toUpperCase();
+    if (typeof actionPayload === 'string') {
+        actionPayload = { text: actionPayload };
     }
 
-    // Styles pour le vol au-dessus de tout
-    ghost.style.position = 'fixed';
-    ghost.style.left = startRect.left + 'px';
-    ghost.style.top = startRect.top + 'px';
-    ghost.style.width = startRect.width + 'px';
-    ghost.style.height = startRect.height + 'px';
-    ghost.style.margin = '0';
-    ghost.style.zIndex = '9999';
-    ghost.style.transition = 'all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1)';
-    ghost.style.pointerEvents = 'none'; // Empêche de bloquer les clics pendant le vol
-    ghost.style.boxShadow = '0 10px 20px rgba(0,0,0,0.5)';
+    // Fusionne avec le dernier log si c'est la 2ème carte piochée du tour
+    if (actionPayload.type === 'draw' && gameState.cardsDrawnThisTurn > 0 && gameState.history.length > 0) {
+        let lastLog = gameState.history[gameState.history.length - 1];
+        if (lastLog.player === playerIndex && lastLog.type === 'draw') {
+            lastLog.cards.push(...actionPayload.cards);
+            lastLog.timestamp = new Date().toISOString();
+            return; // On arrête là : l'action est fusionnée
+        }
+    }
 
-    document.body.appendChild(ghost);
+    gameState.history.push({
+        ...actionPayload,
+        player: playerIndex,
+        timestamp: new Date().toISOString()
+    });
+    // On limite l'historique aux 50 dernières actions pour éviter de surcharger la base de données
+    if (gameState.history.length > 50) gameState.history.shift();
+}
 
-    // Forcer le navigateur à recalculer la position avant l'animation
-    ghost.offsetWidth;
-
-    // Calcul du centre de la destination
-    const destX = endRect.left + (endRect.width / 2) - (startRect.width / 2);
-    const destY = endRect.top + (endRect.height / 2) - (startRect.height / 2);
-
-    // Déclenchement du mouvement
-    ghost.style.left = destX + 'px';
-    ghost.style.top = destY + 'px';
-    ghost.style.transform = 'scale(0.5) rotate(15deg)'; // Rétrécit un peu la carte en volant
-    ghost.style.opacity = '0';
-
-    // Nettoyage à la fin
-    setTimeout(() => ghost.remove(), 400);
+function sendChatMessage(event) {
+    if (event) event.preventDefault();
+    const input = document.getElementById('chat-input');
+    const text = input.value.trim();
+    if (!text) return;
+    
+    if (!gameState.chat) gameState.chat = [];
+    gameState.chat.push({
+        player: localPlayerIndex,
+        text: text,
+        timestamp: new Date().toISOString()
+    });
+    if (gameState.chat.length > 50) gameState.chat.shift();
+    
+    input.value = '';
+    saveGameState();
+    updateUI();
+    
+    // Remet le focus sur la barre de texte (Pratique pour taper vite)
+    setTimeout(() => input.focus(), 50);
 }
 
 // --- LOGIQUE ---
@@ -353,6 +210,8 @@ async function drawDestinationsAction() {
 
     const player = gameState.players[gameState.currentPlayer];
     selectedCards.forEach(c => player.destinations.push(c));
+    
+    addHistory({ type: 'mission', count: selectedCards.length }, gameState.currentPlayer);
 
     // Les cartes non retenues retournent SOUS la pioche
     drawnCards.forEach(c => {
@@ -421,6 +280,8 @@ function drawFromDeck() {
     
     const card = gameState.deck.pop();
     gameState.players[gameState.currentPlayer].cards[card]++;
+    
+    addHistory({ type: 'draw', cards: ['deck'] }, gameState.currentPlayer);
 
     // Animation : Vol de la pioche vers la main du joueur
     animateFlyingCard(document.getElementById('deck'), document.getElementById('player-hand'), 'deck');
@@ -447,6 +308,11 @@ function drawFromRiver(index, event) {
             // Cas proactif : avec l'UI, ce code ne devrait plus être atteignable
             return;
         }
+    }
+    
+    addHistory({ type: 'draw', cards: [card] }, gameState.currentPlayer);
+
+    if (card === "locomotive") {
         gameState.cardsDrawnThisTurn += 2; // Le Joker prend les 2 actions du tour
     } else {
         gameState.cardsDrawnThisTurn++;
@@ -471,6 +337,7 @@ function drawFromRiver(index, event) {
 
 function endTurn() {
     gameState.cardsDrawnThisTurn = 0;
+    gameState.turnCount = (gameState.turnCount || 1) + 1; // Incrémente le tour
     gameState.players[gameState.currentPlayer].lastConnection = new Date().toISOString(); // Met à jour la dernière action du joueur
     gameState.currentPlayer = (gameState.currentPlayer + 1) % gameState.players.length; // Passe au joueur suivant
     saveGameState(); // Sauvegarde finale à la fin du tour complet
@@ -573,16 +440,62 @@ async function claimRoute(playerIndex, routeId) {
     payCost(player, chosenColor, finalCost);
     player.wagons -= route.distance;
     const scoreTable = { 1: 1, 2: 2, 3: 4, 4: 7, 6: 15, 8: 21 };
+    const earnedPoints = scoreTable[route.distance] || 0;
     player.score += scoreTable[route.distance] || 0;
     gameState.claimedRoutes.push({ id: routeId, owner: playerIndex });
+    
+    const vFrom = MAP.villes.find(v => v.id === route.from).name;
+    const vTo = MAP.villes.find(v => v.id === route.to).name;
+    addHistory({ type: 'route', from: vFrom, to: vTo, points: earnedPoints }, playerIndex);
+    
     endTurn(); // Termine le tour et met à jour l'interface
     
     return true;
 }
 
-// --- RENDU VISUEL ---
+// --- CALCULS AVANCÉS ---
 
-// --- GESTION DE LA CARTE (ZOOM / PAN) ---
+function getLongestRouteForPlayer(playerIndex) {
+    const playerRoutes = gameState.claimedRoutes.filter(r => r.owner === playerIndex);
+    if (playerRoutes.length === 0) return 0;
+
+    // 1. Construction du "Graphe" (Carte des connexions du joueur)
+    const graph = {};
+    playerRoutes.forEach(claim => {
+        const route = MAP.routes.find(r => r.id === claim.id);
+        if (!route) return;
+        if (!graph[route.from]) graph[route.from] = [];
+        if (!graph[route.to]) graph[route.to] = [];
+        
+        // Ajoute la route dans les deux sens
+        graph[route.from].push({ routeId: route.id, to: route.to, distance: route.distance });
+        graph[route.to].push({ routeId: route.id, to: route.from, distance: route.distance });
+    });
+
+    let maxLength = 0;
+
+    // 2. Exploration en profondeur (DFS) pour tester tous les chemins
+    function dfs(node, currentLength, visitedEdges) {
+        maxLength = Math.max(maxLength, currentLength);
+        if (!graph[node]) return;
+
+        for (const edge of graph[node]) {
+            if (!visitedEdges.has(edge.routeId)) { // Règle d'or : ne pas repasser sur la même route
+                visitedEdges.add(edge.routeId);
+                dfs(edge.to, currentLength + edge.distance, visitedEdges);
+                visitedEdges.delete(edge.routeId);
+            }
+        }
+    }
+
+    // 3. On lance l'exploration depuis chaque ville de départ possible
+    for (const startNode in graph) {
+        dfs(startNode, 0, new Set());
+    }
+
+    return maxLength;
+}
+
 let viewBox = { x: 0, y: 0, w: 800, h: 600 };
 window.isDraggingMap = false;
 
@@ -701,6 +614,35 @@ function updateViewBox() {
     }
 }
 
+// --- OUTILS DE DÉVELOPPEMENT (LOCAL UNIQUEMENT) ---
+
+function debugSwitchPlayer() {
+    if (gameState && gameState.players && gameState.players.length > 1) {
+        localPlayerIndex = (localPlayerIndex + 1) % gameState.players.length;
+        updateUI(); // Rafraîchit l'interface pour montrer les cartes du nouveau joueur
+    }
+}
+
+async function debugAddPlayer() {
+    if (gameState.players.length >= 4) return;
+    const dummyId = 'bot_' + Math.random().toString(36).substring(2, 9);
+    const newPlayer = { 
+        id: dummyId, 
+        name: "Testeur " + gameState.players.length, 
+        avatarUrl: null,
+        wagons: 45, 
+        cards: {}, 
+        score: 0, 
+        destinations: [], 
+        color: PLAYER_COLORS[gameState.players.length], 
+        lastConnection: new Date().toISOString() 
+    };
+    COLORS.forEach(c => newPlayer.cards[c] = 0);
+    gameState.players.push(newPlayer);
+    await saveGameState();
+    updateUI();
+}
+
 // --- AUTHENTIFICATION GOOGLE ---
 
 async function checkAuth() {
@@ -710,6 +652,7 @@ async function checkAuth() {
         myPlayerId = session.user.id; // L'ID ultra-sécurisé de Supabase
         // Récupère le nom complet Google, ou l'email par défaut
         myPlayerName = session.user.user_metadata.full_name || session.user.email.split('@')[0];
+        myAvatarUrl = session.user.user_metadata.avatar_url || null; // Récupère la photo Google
         
         document.getElementById('auth-section').classList.add('hidden-view');
         document.getElementById('lobby-actions').classList.remove('hidden-view');
@@ -734,6 +677,13 @@ async function logout() {
 
 async function initGame() {
     initMapGestures();
+    
+    // Activation du mode Dev si on est sur Live Server
+    if (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost') {
+        document.getElementById('dev-switch-btn')?.classList.remove('hidden-view');
+        document.getElementById('dev-add-player-btn')?.classList.remove('hidden-view');
+    }
+    
     checkAuth();
 }
 
@@ -781,12 +731,33 @@ async function showLobby() {
                 
                 const gameName = game.state.name || `Partie #${game.id}`;
                 const dateStr = new Date(game.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+                
+                // Calcul du "Tour" (Manche globale)
+                const currentRound = Math.floor(((game.state.turnCount || 1) - 1) / nbPlayers) + 1;
+                const isMyTurn = isPlaying && game.state.players[game.state.currentPlayer]?.id === myPlayerId;
+
+                // Création des bulles d'initiales pour les joueurs
+                const playersHtml = game.state.players.map((p, idx) => {
+                    const isCurrentTurn = isPlaying && (idx === game.state.currentPlayer);
+                    const isMe = (p.id === myPlayerId);
+                    const borderClass = isCurrentTurn ? 'avatar-active' : '';
+                    const avatarContent = p.avatarUrl 
+                        ? `<img src="${p.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">`
+                        : p.name.substring(0, 2).toUpperCase();
+                    return `<div class="player-avatar ${borderClass}" style="background-color: ${p.color};" title="${p.name}${isMe ? ' (Vous)' : ''}">${avatarContent}</div>`;
+                }).join('');
 
                 return `
-                    <div class="game-item">
-                        <div style="display:flex; flex-direction:column; align-items:flex-start; text-align:left;">
-                            <strong>${gameName}</strong>
-                            <span style="font-size:12px; color:#bdc3c7;">Créée le ${dateStr} - ${nbPlayers}/4 joueurs</span>
+                    <div class="game-item ${isMyTurn ? 'my-turn-highlight' : ''}">
+                        <div style="display:flex; flex-direction:column; align-items:flex-start; text-align:left; flex-grow: 1;">
+                            <div style="display:flex; align-items:center;">
+                                <strong>${gameName}</strong>
+                                ${isMyTurn ? '<span class="my-turn-badge">C\'est à vous !</span>' : ''}
+                            </div>
+                            <span style="font-size:12px; color:#bdc3c7; margin-bottom: 8px;">Créée le ${dateStr} ${isPlaying ? `- Tour n°${currentRound}` : `- En attente (${nbPlayers}/4)`}</span>
+                            <div class="avatar-container">
+                                ${playersHtml}
+                            </div>
                         </div>
                         <button onclick="joinGame(${game.id})">${btnLabel}</button>
                     </div>
@@ -801,12 +772,12 @@ async function createNewGame() {
     const gameName = gameNameInput || `Partie de ${myPlayerName}`;
 
     gameState = {
-        name: gameName, status: 'waiting', currentPlayer: 0, cardsDrawnThisTurn: 0,
+        name: gameName, status: 'waiting', currentPlayer: 0, turnCount: 1, cardsDrawnThisTurn: 0, history: [], chat: [],
         players: [], claimedRoutes: [], deck: [], destinationDeck: [], discardPile: [], faceUpCards: []
     };
 
     // Ajoute le créateur à la liste des joueurs
-    const creator = { id: myPlayerId, name: myPlayerName, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[0], lastConnection: new Date().toISOString() };
+    const creator = { id: myPlayerId, name: myPlayerName, avatarUrl: myAvatarUrl, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[0], lastConnection: new Date().toISOString() };
     COLORS.forEach(c => creator.cards[c] = 0);
     gameState.players.push(creator);
 
@@ -847,7 +818,7 @@ async function joinGame(id) {
         if (gameState.status === 'playing') return alert("La partie a déjà commencé, vous ne pouvez pas la rejoindre !");
         if (gameState.players.length >= 4) return alert("La partie est complète (4 joueurs max) !");
         
-        const newPlayer = { id: myPlayerId, name: myPlayerName, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[gameState.players.length], lastConnection: new Date().toISOString() };
+        const newPlayer = { id: myPlayerId, name: myPlayerName, avatarUrl: myAvatarUrl, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[gameState.players.length], lastConnection: new Date().toISOString() };
         COLORS.forEach(c => newPlayer.cards[c] = 0);
         
         gameState.players.push(newPlayer);
@@ -873,6 +844,7 @@ async function startActiveGame() {
         if(gameState.destinationDeck.length > 0) p.destinations.push(gameState.destinationDeck.pop());
     });
 
+    addHistory({ type: 'start' }, 0); // Log du début
     gameState.status = 'playing'; // On lance la partie !
     await saveGameState();
     updateUI();
@@ -889,10 +861,11 @@ function renderWaitingRoom() {
     listEl.innerHTML = gameState.players.map((p, i) => {
         const isOnline = onlinePlayers[p.id];
         const onlineIcon = isOnline ? "🟢" : "🔴";
+        const avatarImg = p.avatarUrl ? `<img src="${p.avatarUrl}" style="width:24px; height:24px; border-radius:50%; vertical-align:middle; margin-right:8px; border:1px solid ${p.color}; object-fit:cover;">` : '';
         const lastSeenText = (!isOnline && p.lastConnection) ? ` <span style="font-size:12px; color:#ccc; font-weight:normal;">(Vu: ${formatLastSeen(p.lastConnection)})</span>` : '';
         return `
             <div style="padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.2); color: ${p.color}; font-weight: bold;">
-                ${onlineIcon} ${i === 0 ? '👑 ' : '🧑‍🚀 '}${p.name} ${p.id === myPlayerId ? ' <i>(VOUS)</i>' : ''}${lastSeenText}
+                ${onlineIcon} ${avatarImg}${i === 0 ? '👑 ' : '🧑‍🚀 '}${p.name} ${p.id === myPlayerId ? ' <i>(VOUS)</i>' : ''}${lastSeenText}
             </div>
         `;
     }).join('');
@@ -1009,10 +982,11 @@ function updateUI() {
 
             const isOnline = onlinePlayers[p.id];
             const onlineIcon = isOnline ? "🟢" : "🔴";
+            const avatarImg = p.avatarUrl ? `<img src="${p.avatarUrl}" style="width:16px; height:16px; border-radius:50%; vertical-align:middle; margin-right:4px; object-fit:cover;">` : '';
             const lastSeenText = (!isOnline && p.lastConnection) ? `<div style="font-size:9px; color:#bdc3c7; margin-top:-5px; margin-bottom:4px; font-weight:normal; line-height: 1;">Vu: ${formatLastSeen(p.lastConnection)}</div>` : '';
 
             cardDiv.innerHTML = `
-                <div class="player-name" ${isActive ? `style="color: ${p.color};"` : ''}>${onlineIcon} ${nameText}</div>
+                <div class="player-name" ${isActive ? `style="color: ${p.color};"` : ''}>${onlineIcon} ${avatarImg}${nameText}</div>
                 ${lastSeenText}
                 <div class="player-stats">
                     <div class="stat-item" title="Score"><span class="stat-icon">⭐</span><span class="stat-value">${p.score}</span></div>
@@ -1117,6 +1091,8 @@ function updateUI() {
     if (discardElement) {
         discardElement.innerText = `Défausse\n(${gameState.discardPile.length})`;
     }
+    
+    updateHistoryUI();
 }
 
 // (Garder ici tes fonctions drawProfessionalRoute et drawCity que tu as déjà)
