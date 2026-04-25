@@ -1,25 +1,16 @@
 /* Fond du jeu */
 #map-svg {
-    filter: drop-shadow(0px 5px 15px rgba(0,0,0,0.3));
+    filter: drop-shadow(0px 5px 15px rgba(0,0,0,0.6));
     border-radius: 8px;
+    flex-grow: 1;
+    width: 95%;
+    max-height: 70vh;
+    margin: 10px 0;
+    background-color: #1e272e; /* Fond sombre urbain pour Scotland Yard */
+    touch-action: none;
+    cursor: grab;
 }
-
-/* Style des wagons */
-.wagon-unit {
-    stroke: rgba(0, 0, 0, 0.4);
-    stroke-width: 1.5;
-    transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-}
-
-.route-group:hover .wagon-unit {
-    stroke: white;
-    filter: brightness(1.2);
-}
-
-/* Style visuel des Tunnels */
-.tunnel-wagon {
-    stroke-dasharray: 4, 3; /* Effet de pointillés */
-}
+#map-svg:active { cursor: grabbing; }
 
 body {
     margin: 0;
@@ -159,9 +150,9 @@ body {
 }
 
 .player-stats {
-    display: grid;
-    grid-template-columns: 1fr 1fr; /* Disposition en 2 colonnes x 2 lignes */
-    gap: 4px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
     width: 100%;
     justify-content: center;
 }
@@ -184,6 +175,26 @@ body {
     font-size: 12px;
 }
 
+.ap-container {
+    width: 100%;
+    background: rgba(0,0,0,0.5);
+    border-radius: 10px;
+    height: 12px;
+    margin-top: 2px;
+    position: relative;
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.2);
+}
+.ap-bar {
+    height: 100%;
+    transition: width 0.3s ease;
+}
+.ap-text {
+    position: absolute; top: -1px; width: 100%; text-align: center;
+    font-size: 9px; font-weight: bold; color: white;
+    text-shadow: 1px 1px 1px black; line-height: 12px;
+}
+
 #turn-banner {
     font-weight: bold; font-size: 14px; padding: 5px 15px; border-radius: 20px; 
     box-shadow: 0 2px 5px rgba(0,0,0,0.5); text-transform: uppercase;
@@ -199,24 +210,6 @@ body {
     100% { box-shadow: 0 0 5px #2ecc71; }
 }
 
-/* Plateau */
-#map-svg {
-    flex-grow: 1;
-    width: 95%;
-    max-height: 60vh;
-    margin: 10px 0;
-    box-shadow: 0px 10px 20px rgba(0,0,0,0.5); /* Ultra-fluide sur mobile contrairement à 'filter' */
-    border-radius: 15px;
-    background-color: #f0e6d2;
-    touch-action: none; /* Empêche le défilement de la page sur mobile */
-    cursor: grab;
-}
-
-#map-svg:active {
-    cursor: grabbing;
-}
-
-/* Zone des cartes */
 #ui-bottom {
     width: 100%;
     display: flex;
@@ -226,149 +219,44 @@ body {
     background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
 }
 
-.hand-container {
-    display: flex;
-    justify-content: center;
-    width: 100%;
-    height: 60px; /* Laisse dépasser les cartes vers le bas pour n'en voir que la moitié */
-    perspective: 1000px;
-}
-
-/* Style des cartes */
-.card-visual {
-    width: 70px;
-    height: 100px;
-    border-radius: 8px;
-    margin-left: -30px; /* Chevauchement */
-    border: 2px solid white;
-    box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+/* Carnet de route du Fugitif */
+#travel-log-sidebar {
+    position: absolute;
+    right: 0;
+    top: 75px; /* Sous les scores */
+    bottom: 10px;
+    width: 45px;
+    background: rgba(44, 62, 80, 0.85);
+    border-radius: 8px 0 0 8px;
+    border-left: 2px solid #34495e;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-weight: bold;
-    color: white;
-    text-shadow: 1px 1px 2px black;
-    transition: transform 0.3s ease, margin 0.3s ease;
-    cursor: pointer;
+    z-index: 50;
+    backdrop-filter: blur(5px);
 }
+.travel-header {
+    font-size: 10px; color: white; text-align: center; padding: 5px 0; 
+    font-weight: bold; background: #c0392b; border-radius: 8px 0 0 0;
+}
+#travel-log-content {
+    flex-grow: 1; overflow-y: auto; display: flex; flex-direction: column; 
+    gap: 3px; padding: 4px;
+}
+.travel-slot {
+    min-height: 18px; flex-shrink: 0; border-radius: 4px; display: flex; 
+    align-items: center; justify-content: center; font-size: 11px; 
+    font-weight: bold; color: white; text-shadow: 1px 1px 1px black;
+    border: 1px solid #7f8c8d; background: rgba(0,0,0,0.3);
+}
+.travel-slot-reveal { border: 2px solid #e74c3c; box-shadow: inset 0 0 8px rgba(231, 76, 60, 0.4); }
 
-.card-visual:first-child { margin-left: 0; }
-
-.card-visual:hover {
-    transform: translateY(-40px) scale(1.1) !important; /* Fait jaillir la carte quand on la touche */
-    z-index: 100;
-}
-
-/* Zone de pioche et rivière */
-.draw-area {
-    display: flex;
-    gap: 15px;
-    margin-top: 15px;
-    align-items: center;
-}
-
-.river-container {
-    display: flex;
-    gap: 10px;
-}
-
-.river-card {
-    margin-left: 0; /* Empêche le chevauchement qui n'existe que dans la main */
-    transform: none !important;
-}
-.river-card:hover {
-    transform: translateY(-10px) !important;
-    box-shadow: 0 0 15px gold;
-}
-
-.deck-card {
-    background: repeating-linear-gradient(45deg, #2c3e50, #2c3e50 10px, #34495e 10px, #34495e 20px);
-    margin-left: 0;
-    transform: none !important;
-    font-size: 14px;
-    text-align: center;
-}
-.deck-card:hover {
-    transform: translateY(-5px) !important;
-    box-shadow: 0 0 15px white;
-}
-
-.loco-card {
-    background: linear-gradient(135deg, red, orange, yellow, green, blue, purple);
-    color: white;
-    text-shadow: 1px 1px 2px black;
-}
-
-.dest-card {
-    background: linear-gradient(135deg, #e67e22, #f39c12);
-    color: white;
-    font-size: 14px;
-    text-align: center;
-    text-shadow: 1px 1px 2px black;
-}
-.dest-card:hover {
-    transform: translateY(-5px) !important;
-    box-shadow: 0 0 15px #f39c12;
-}
-
-.mission-item {
-    background: #f1c40f;
-    color: #2c3e50;
-    padding: 3px 8px;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: bold;
-    display: inline-block;
-    margin: 2px;
-    border: 1px solid #d35400;
-}
-
-.disabled-card {
-    filter: grayscale(100%) brightness(60%);
-    cursor: not-allowed !important;
-    transform: none !important;
-    box-shadow: none !important;
-    opacity: 0.8;
-}
-
-.discard-card {
-    background: #7f8c8d;
-    border: 2px dashed #bdc3c7;
-    cursor: default;
-}
-
-/* Ligne de mission à vol d'oiseau */
-.mission-line {
-    stroke: #e67e22; /* Orange rappelant les cartes destination */
-    stroke-width: 3;
-    stroke-dasharray: 8, 8;
-    opacity: 0.6;
-    pointer-events: none; /* Crucial : ne bloque pas les clics sur les routes en dessous */
-    animation: dash-move 20s linear infinite;
-    stroke-linecap: round;
-}
-
-@keyframes dash-move {
-    to { stroke-dashoffset: -1000; }
-}
-
-/* Filtre de halo doré */
-.highlight-route {
-    filter: drop-shadow(0 0 8px gold) drop-shadow(0 0 3px yellow);
-    cursor: pointer;
-}
-
-/* Animation de pulsation pour les routes jouables */
-.playable-pulse {
-    animation: pulse-gold 2s infinite;
-}
-
-@keyframes pulse-gold {
-    0% { filter: drop-shadow(0 0 2px gold); }
-    50% { filter: drop-shadow(0 0 12px gold); }
-    100% { filter: drop-shadow(0 0 2px gold); }
-}
+/* Layout de Sélection des Rôles (Salle d'attente) */
+.role-container { display: flex; gap: 20px; width: 100%; justify-content: center; margin: 20px 0; flex-wrap: wrap; text-align: left; }
+.role-column { background: rgba(0,0,0,0.4); padding: 15px; border-radius: 8px; flex: 1; min-width: 250px; }
+.role-slot { background: rgba(255,255,255,0.1); padding: 10px; border-radius: 6px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+.role-slot.empty { border: 1px dashed rgba(255,255,255,0.5); }
+.role-slot.filled { border: 1px solid #3498db; background: rgba(52, 152, 219, 0.2); }
+.role-slot.fugitif-filled { border: 1px solid #e74c3c; background: rgba(231, 76, 60, 0.2); }
 
 /* Système de Modale personnalisée */
 .modal-overlay {
@@ -450,16 +338,6 @@ body {
     border-radius: 50%; padding: 2px 6px; font-size: 10px; font-weight: bold; box-shadow: 0 0 5px red;
 }
 
-.mini-card {
-    display: inline-block; width: 16px; height: 22px; border-radius: 3px;
-    color: white; font-size: 10px; font-weight: bold; text-align: center;
-    line-height: 22px; border: 1px solid rgba(255,255,255,0.5);
-    vertical-align: middle; margin: 0 2px; text-shadow: 1px 1px 1px black;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.4);
-}
-.mini-deck { background: repeating-linear-gradient(45deg, #2c3e50, #2c3e50 3px, #34495e 3px, #34495e 6px); font-size: 12px; }
-.mini-loco { background: linear-gradient(135deg, red, orange, yellow, green, blue, purple); }
-
 /* Notifications Toast */
 #toast-container {
     position: fixed; top: 80px; right: 15px; z-index: 3000;
@@ -497,31 +375,49 @@ body {
 .chat-bubble-other { background: #34495e; align-self: flex-start; border-bottom-left-radius: 2px; }
 .chat-sender { font-size: 10px; color: #bdc3c7; margin-bottom: 5px; font-weight: bold; }
 
+/* Animation des pions sur la carte */
+.pawn-active {
+    animation: pawn-bounce 0.6s infinite alternate ease-in-out;
+}
+@keyframes pawn-bounce {
+    from { transform: translateY(0); }
+    to { transform: translateY(-6px); }
+}
+
+/* Nœuds (Stations) jouables */
+.playable-node {
+    animation: pulse-gold 1.5s infinite;
+}
+@keyframes pulse-gold {
+    0% { filter: drop-shadow(0 0 2px gold); }
+    50% { filter: drop-shadow(0 0 10px gold); }
+    100% { filter: drop-shadow(0 0 2px gold); }
+}
+
+/* Animation du véhicule en déplacement */
+.vehicle-vibrate {
+    animation: vehicle-vibe 0.1s infinite alternate ease-in-out;
+}
+@keyframes vehicle-vibe {
+    0% { transform: translate(-1px, -1px) rotate(-1deg); }
+    100% { transform: translate(1px, 1px) rotate(1deg); }
+}
+
+/* Animation d'arrivée du pion (saut) */
+.pawn-jump {
+    animation: pawn-jump-anim 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+@keyframes pawn-jump-anim {
+    0% { transform: scale(0.2) translateY(-40px); opacity: 0; }
+    100% { transform: scale(1) translateY(0); opacity: 1; }
+}
+
 .hidden-view {
     display: none !important;
 }
 
 /* --- RESPONSIVE DESIGN (SMARTPHONES) --- */
 @media (max-width: 600px) {
-    .card-visual {
-        width: 42px;
-        height: 62px;
-        font-size: 11px;
-        margin-left: -20px; /* Rapproche les cartes dans la main */
-    }
-    .draw-area {
-        flex-wrap: wrap; /* Permet à la rivière de passer à la ligne */
-        justify-content: center;
-        gap: 6px;
-        margin-top: 2px;
-        margin-bottom: 5px;
-    }
-    .river-container {
-        gap: 5px;
-    }
-    .hand-container {
-        height: 35px; /* La moitié de la taille de la carte sur mobile */
-    }
     #map-svg {
         width: 100%; /* Prend toute la largeur de l'écran en portrait */
         border-radius: 0; /* Plus esthétique sur les bords */

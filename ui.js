@@ -11,6 +11,29 @@ function formatLastSeen(dateString) {
     return date.toLocaleDateString();
 }
 
+function playSoundWithFade(url, totalDuration) {
+    const audio = new Audio(url);
+    // Les navigateurs bloquent parfois le son s'il n'y a pas eu de clic au préalable. On intercepte l'erreur proprement.
+    audio.play().catch(e => console.warn("Audio bloqué en attente d'interaction :", e));
+
+    const fadeDuration = Math.min(1000, totalDuration / 2); // 1 seconde max de fondu, ou la moitié du trajet s'il est très court
+    const fadeStartTime = totalDuration - fadeDuration;
+
+    setTimeout(() => {
+        let volumeActuel = 1.0;
+        const fadeInterval = setInterval(() => {
+            volumeActuel -= 0.05;
+            if (volumeActuel <= 0) {
+                clearInterval(fadeInterval);
+                audio.pause();
+                audio.currentTime = 0;
+            } else {
+                audio.volume = volumeActuel;
+            }
+        }, fadeDuration / 20); // Divise la durée du fondu en 20 paliers fluides
+    }, fadeStartTime);
+}
+
 function showModal(text, options = []) {
     return new Promise(resolve => {
         const modal = document.getElementById('custom-modal');
@@ -32,6 +55,10 @@ function showModal(text, options = []) {
             } else {
                 btn.className = `modal-btn ${opt.class || ''}`;
                 btn.innerText = opt.label;
+                if (opt.bgColor) {
+                    btn.style.backgroundColor = opt.bgColor;
+                    btn.style.textShadow = "1px 1px 2px rgba(0,0,0,0.8)";
+                }
             }
 
             btn.onclick = () => {
@@ -95,61 +122,12 @@ function showMultiSelectModal(text, items, minSelect) {
     });
 }
 
-// --- ANIMATIONS VISUELLES ---
-function animateFlyingCard(sourceEl, targetEl, color) {
-    if (!sourceEl || !targetEl) return;
-    const startRect = sourceEl.getBoundingClientRect();
-    const endRect = targetEl.getBoundingClientRect();
-
-    const ghost = document.createElement('div');
-    ghost.className = 'card-visual';
-    
-    if (color === 'deck') {
-        ghost.classList.add('deck-card');
-        ghost.innerText = 'Pioche';
-    } else if (color === 'dest') {
-        ghost.classList.add('dest-card');
-        ghost.innerText = 'Missions';
-    } else if (color === 'locomotive') {
-        ghost.classList.add('loco-card');
-        ghost.innerText = 'J';
-    } else {
-        ghost.style.backgroundColor = COLOR_MAP[color] || color;
-        ghost.innerText = INITIALS_MAP[color] || color.charAt(0).toUpperCase();
-    }
-
-    ghost.style.position = 'fixed';
-    ghost.style.left = startRect.left + 'px';
-    ghost.style.top = startRect.top + 'px';
-    ghost.style.width = startRect.width + 'px';
-    ghost.style.height = startRect.height + 'px';
-    ghost.style.margin = '0';
-    ghost.style.zIndex = '9999';
-    ghost.style.transition = 'all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1)';
-    ghost.style.pointerEvents = 'none';
-    ghost.style.boxShadow = '0 10px 20px rgba(0,0,0,0.5)';
-
-    document.body.appendChild(ghost);
-    ghost.offsetWidth;
-
-    const destX = endRect.left + (endRect.width / 2) - (startRect.width / 2);
-    const destY = endRect.top + (endRect.height / 2) - (startRect.height / 2);
-
-    ghost.style.left = destX + 'px';
-    ghost.style.top = destY + 'px';
-    ghost.style.transform = 'scale(0.5) rotate(15deg)';
-    ghost.style.opacity = '0';
-
-    setTimeout(() => ghost.remove(), 400);
-}
-
 // --- HISTORIQUE UI ---
 function toggleHistoryMenu() {
     const sidebar = document.getElementById('history-sidebar');
     if (sidebar.classList.contains('history-open')) {
         sidebar.classList.remove('history-open');
-        // On marque comme "lu" uniquement quand on FERME le panneau
-        const storageKey = 'lastViewedHistory_' + currentGameId + '_' + localPlayerIndex;
+        const storageKey = 'lastViewedHistory_' + currentGameId + '_' + myPlayerId;
         localStorage.setItem(storageKey, new Date().toISOString());
         updateHistoryUI();
     } else {
@@ -158,45 +136,39 @@ function toggleHistoryMenu() {
     }
 }
 
+function showGameOptions() {
+    if (gameState.creatorId !== myPlayerId) return;
+    showModal("🛠 Options de la partie\n\n(Menu en cours de préparation...)", []);
+}
+
 function updateHistoryUI() {
     const content = document.getElementById('history-content');
     const sidebar = document.getElementById('history-sidebar');
     const badge = document.getElementById('history-badge');
     if (!content || !gameState.history) return;
 
-    const storageKey = 'lastViewedHistory_' + currentGameId + '_' + localPlayerIndex;
+    const storageKey = 'lastViewedHistory_' + currentGameId + '_' + myPlayerId;
     const lastViewed = localStorage.getItem(storageKey) || "2000-01-01T00:00:00.000Z";
 
 
     let unreadCount = 0;
     content.innerHTML = gameState.history.slice().reverse().map(item => {
-        const player = gameState.players[item.player];
-        if (!player) return ''; 
+        const user = gameState.users.find(u => u.id === item.userId);
+        if (!user) return ''; 
         
-        const isMe = item.player === localPlayerIndex;
+        const isMe = item.userId === myPlayerId;
         const isNew = !isMe && new Date(item.timestamp) > new Date(lastViewed);
         if (isNew) unreadCount++;
         const timeStr = new Date(item.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-        const avatarContent = player.avatarUrl ? `<img src="${player.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">` : player.name.substring(0, 2).toUpperCase();
-        const avatarHtml = `<div class="player-avatar" style="width: 22px; height: 22px; min-width: 22px; font-size: 9px; background-color: ${player.color}; flex-shrink: 0;" title="${player.name}">${avatarContent}</div>`;
-
+         const avatarContent = user.avatarUrl ? `<img src="${user.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">` : user.name.substring(0, 2).toUpperCase();
+        const avatarHtml = `<div class="player-avatar" style="width: 22px; height: 22px; min-width: 22px; font-size: 9px; background-color: #34495e; flex-shrink: 0;" title="${user.name}">${avatarContent}</div>`;
         let actionHtml = '';
-        if (item.text) actionHtml = item.text;
-        else if (item.type === 'draw') {
-            const cardsHtml = item.cards.map(c => {
-                if (c === 'deck') return `<span class="mini-card mini-deck" title="Pioche">?</span>`;
-                if (c === 'locomotive') return `<span class="mini-card mini-loco" title="Locomotive">J</span>`;
-                return `<span class="mini-card" style="background-color: ${COLOR_MAP[c] || c}" title="${c}">${INITIALS_MAP[c] || c.charAt(0).toUpperCase()}</span>`;
-            }).join('');
-            actionHtml = `a pioché ${cardsHtml}`;
-        } else if (item.type === 'mission') actionHtml = `a gardé <b style="color:#f1c40f">${item.count}</b> carte(s) mission secrète.`;
-        else if (item.type === 'route') actionHtml = `a construit la route <b style="color:#3498db">${item.from} - ${item.to}</b> (<span style="color:#2ecc71">+${item.points} pts</span>).`;
-        else if (item.type === 'start') actionHtml = `La partie a démarré !`;
+        if (item.text) actionHtml = item.text; // On ne garde que le format générique
 
         const badgeHtml = isNew ? `<div style="position: absolute; top: -6px; right: -6px; font-size: 9px; background: #2ecc71; color: white; padding: 2px 4px; border-radius: 4px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.5); z-index: 10;">Nouv.</div>` : '';
 
         return `
-            <div class="history-item ${isNew ? 'new-item' : ''}" style="border-left-color: ${player.color}">
+            <div class="history-item ${isNew ? 'new-item' : ''}" style="border-left-color: #34495e">
                 ${badgeHtml}
                 ${avatarHtml}
                 <div style="line-height: 1.3; flex-grow: 1;">${actionHtml}</div>
@@ -216,29 +188,19 @@ function updateHistoryUI() {
 }
 
 function showToastFromHistory(item) {
-    const player = gameState.players[item.player];
-    if (!player) return;
+    const user = gameState.users.find(u => u.id === item.userId);
+    if (!user) return;
 
-    const avatarContent = player.avatarUrl ? `<img src="${player.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">` : player.name.substring(0, 2).toUpperCase();
-    const avatarHtml = `<div class="player-avatar" style="width: 28px; height: 28px; min-width: 28px; font-size: 11px; background-color: ${player.color}; flex-shrink: 0; box-shadow: 0 0 5px ${player.color};">${avatarContent}</div>`;
+    const avatarContent = user.avatarUrl ? `<img src="${user.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">` : user.name.substring(0, 2).toUpperCase();
+    const avatarHtml = `<div class="player-avatar" style="width: 28px; height: 28px; min-width: 28px; font-size: 11px; background-color: #34495e; flex-shrink: 0; box-shadow: 0 0 5px #34495e;">${avatarContent}</div>`;
 
     let actionHtml = '';
     if (item.text) actionHtml = item.text;
-    else if (item.type === 'draw') {
-        const cardsHtml = item.cards.map(c => {
-            if (c === 'deck') return `<span class="mini-card mini-deck" title="Pioche">?</span>`;
-            if (c === 'locomotive') return `<span class="mini-card mini-loco" title="Locomotive">J</span>`;
-            return `<span class="mini-card" style="background-color: ${COLOR_MAP[c] || c}" title="${c}">${INITIALS_MAP[c] || c.charAt(0).toUpperCase()}</span>`;
-        }).join('');
-        actionHtml = `a pioché ${cardsHtml}`;
-    } else if (item.type === 'mission') actionHtml = `a gardé <b style="color:#f1c40f">${item.count}</b> mission(s).`;
-    else if (item.type === 'route') actionHtml = `a construit <b style="color:#3498db">${item.from} - ${item.to}</b>.`;
-    else if (item.type === 'start') actionHtml = `La partie a démarré !`;
 
     const toast = document.createElement('div');
     toast.className = 'toast-msg';
-    toast.style.borderLeftColor = player.color;
-    toast.innerHTML = `${avatarHtml}<div style="line-height: 1.3;"><b>${player.name}</b> ${actionHtml}</div>`;
+    toast.style.borderLeftColor = '#34495e';
+    toast.innerHTML = `${avatarHtml}<div style="line-height: 1.3;"><b>${user.name}</b> ${actionHtml}</div>`;
 
     const container = document.getElementById('toast-container');
     if (container) {
@@ -257,7 +219,7 @@ function toggleChatMenu() {
     if (sidebar.classList.contains('chat-open')) {
         sidebar.classList.remove('chat-open');
         // On marque tout comme lu à la fermeture
-        const storageKey = 'lastViewedChat_' + currentGameId + '_' + localPlayerIndex;
+        const storageKey = 'lastViewedChat_' + currentGameId + '_' + myPlayerId;
         localStorage.setItem(storageKey, new Date().toISOString());
         updateChatUI();
     } else {
@@ -275,7 +237,7 @@ function updateChatUI() {
     const sidebar = document.getElementById('chat-sidebar');
     if (!content || !gameState.chat) return;
     
-    const storageKey = 'lastViewedChat_' + currentGameId + '_' + localPlayerIndex;
+    const storageKey = 'lastViewedChat_' + currentGameId + '_' + myPlayerId;
     const lastViewed = localStorage.getItem(storageKey) || "2000-01-01T00:00:00.000Z";
 
 
@@ -283,27 +245,25 @@ function updateChatUI() {
         let htmlToInject = '';
     
     gameState.chat.forEach(item => {
-        const player = gameState.players[item.player];
-        if (!player) return; 
+        const user = gameState.users.find(u => u.id === item.userId);
+        if (!user) return; 
         
-        const isMe = item.player === localPlayerIndex;
+        const isMe = item.userId === myPlayerId;
         const isNew = !isMe && new Date(item.timestamp) > new Date(lastViewed);
         if (isNew) unreadCount++;
         
         const timeStr = new Date(item.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
         const badgeHtml = isNew ? `<div style="position: absolute; top: -6px; right: -6px; font-size: 9px; background: #2ecc71; color: white; padding: 2px 4px; border-radius: 4px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.5); z-index: 10;">Nouv.</div>` : '';
-
-        
         
         if (isMe) {
             htmlToInject += `<div class="chat-bubble chat-bubble-own" style="position:relative; margin-bottom: 5px;"><div>${item.text}</div><div style="font-size: 9px; text-align: right; opacity: 0.7; margin-top: 3px;">${timeStr}</div></div>`;
         } else {
-            const avatarContent = player.avatarUrl ? `<img src="${player.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">` : player.name.substring(0, 2).toUpperCase();
-            const avatarHtml = `<div class="player-avatar" style="width: 24px; height: 24px; min-width: 24px; font-size: 10px; background-color: ${player.color}; flex-shrink: 0;" title="${player.name}">${avatarContent}</div>`;
+            const avatarContent = user.avatarUrl ? `<img src="${user.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">` : user.name.substring(0, 2).toUpperCase();
+            const avatarHtml = `<div class="player-avatar" style="width: 24px; height: 24px; min-width: 24px; font-size: 10px; background-color: #34495e; flex-shrink: 0;" title="${user.name}">${avatarContent}</div>`;
             
             htmlToInject += `<div style="display: flex; gap: 6px; align-items: flex-end; align-self: flex-start; max-width: 90%; margin-bottom: 5px;">
                 ${avatarHtml}
-                <div class="chat-bubble chat-bubble-other" style="border-left: 3px solid ${player.color}; align-self: auto; max-width: unset; position:relative;">
+                <div class="chat-bubble chat-bubble-other" style="border-left: 3px solid #34495e; align-self: auto; max-width: unset; position:relative;">
                     ${badgeHtml}
                     <div>${item.text}</div>
                     <div style="font-size: 9px; text-align: right; opacity: 0.7; margin-top: 3px;">${timeStr}</div>
@@ -333,16 +293,16 @@ function updateChatUI() {
 }
 
 function showToastFromChat(item) {
-    const player = gameState.players[item.player];
-    if (!player) return;
+    const user = gameState.users.find(u => u.id === item.userId);
+    if (!user) return;
 
-    const avatarContent = player.avatarUrl ? `<img src="${player.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">` : player.name.substring(0, 2).toUpperCase();
-    const avatarHtml = `<div class="player-avatar" style="width: 28px; height: 28px; min-width: 28px; font-size: 11px; background-color: ${player.color}; flex-shrink: 0; box-shadow: 0 0 5px ${player.color};">${avatarContent}</div>`;
+    const avatarContent = user.avatarUrl ? `<img src="${user.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">` : user.name.substring(0, 2).toUpperCase();
+    const avatarHtml = `<div class="player-avatar" style="width: 28px; height: 28px; min-width: 28px; font-size: 11px; background-color: #34495e; flex-shrink: 0; box-shadow: 0 0 5px #34495e;">${avatarContent}</div>`;
 
     const toast = document.createElement('div');
     toast.className = 'toast-msg';
-    toast.style.borderLeftColor = player.color;
-    toast.innerHTML = `${avatarHtml}<div style="line-height: 1.3; flex-grow: 1;"><b>${player.name}</b><br><span style="font-style: italic;">"${item.text}"</span></div>`;
+    toast.style.borderLeftColor = '#34495e';
+    toast.innerHTML = `${avatarHtml}<div style="line-height: 1.3; flex-grow: 1;"><b>${user.name}</b><br><span style="font-style: italic;">"${item.text}"</span></div>`;
 
     const container = document.getElementById('toast-container');
     if (container) {
@@ -355,30 +315,121 @@ function showToastFromChat(item) {
     }
 }
 
+function triggerRemoteAnimation(action, callback) {
+    if (!action.from || !action.to) return callback();
+
+    const link = MAP.links.find(l => 
+        l.type === action.transport && 
+        ((l.from === action.from && l.to === action.to) || (l.to === action.from && l.from === action.to))
+    );
+    
+    let pathIds = [action.from, action.to];
+    if (link) {
+        pathIds = [link.from, ...(link.path || []), link.to];
+        if (link.to === action.from) pathIds.reverse();
+    }
+
+    window.lastArrivalCharId = action.charId;
+
+    animateVehicleMove(pathIds, action.transport, () => {
+        callback();
+    }, action.charId);
+}
+
+// --- CARNET DE ROUTE DU FUGITIF ---
+function updateTravelLogUI() {
+    const container = document.getElementById('travel-log-content');
+    if (!container) return;
+    
+    let html = '';
+    for (let i = 1; i <= MAX_TURNS; i++) {
+        const isReveal = REVEAL_TURNS.includes(i);
+        const move = gameState.fugitiveMoves ? gameState.fugitiveMoves[i - 1] : null;
+        
+        let content = isReveal ? '👁️' : i;
+        let bgColor = 'transparent';
+        let textColor = 'white';
+        
+        if (move) {
+            if (move.transport === 'SKIP') {
+                content = isReveal ? (move.position || 'Zz') : 'Zz';
+                bgColor = '#7f8c8d';
+            } else {
+                const tInfo = TRANSPORT[move.transport];
+                bgColor = tInfo ? tInfo.color : '#bdc3c7';
+                content = isReveal ? (move.position || '?') : '';
+                textColor = (move.transport === 'TAXI') ? '#2c3e50' : 'white'; // Texte sombre sur fond jaune/blanc
+            }
+        }
+        
+        const extraClass = isReveal ? 'travel-slot-reveal' : '';
+        html += `<div class="travel-slot ${extraClass}" style="background-color: ${bgColor}; color: ${textColor};">${content}</div>`;
+    }
+    container.innerHTML = html;
+    
+    // Défilement automatique pour voir le tour actuel
+    const currentTurn = gameState.fugitiveMoves ? gameState.fugitiveMoves.length : 0;
+    if (currentTurn > 10) {
+        container.scrollTop = (currentTurn * 22) - 100;
+    }
+}
+
 // --- RENDU VISUEL DU PLATEAU ---
+
+function renderRoleSlot(roleType, index, userId) {
+    const user = userId ? gameState.users.find(u => u.id === userId) : null;
+    if (user) {
+        const isMe = userId === myPlayerId;
+        const isBot = userId.startsWith('bot_');
+        const quitBtn = (isMe || isBot) ? `<button onclick="unclaimRole('${roleType}', ${index})" style="background:#e74c3c; color:white; border:none; border-radius:4px; padding:4px 8px; cursor:pointer;">${isBot ? 'Retirer' : 'Quitter'}</button>` : '';
+        const avatarContent = user.avatarUrl ? `<img src="${user.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">` : user.name.substring(0, 2).toUpperCase();
+        return `<div class="role-slot filled ${roleType === 'fugitif' ? 'fugitif-filled' : ''}">
+                    <div style="display:flex; align-items:center; gap:10px;"><div class="player-avatar" style="background:#2c3e50;">${avatarContent}</div><strong>${user.name}</strong></div>${quitBtn}
+                </div>`;
+    } else {
+        const devBtn = window.isDevMode ? `<button onclick="debugAddBotToRole('${roleType}', ${index})" style="background:#8e44ad; color:white; border:none; border-radius:4px; padding:4px 8px; margin-left: 5px; cursor:pointer; font-weight:bold;">+ Bot</button>` : '';
+        return `<div class="role-slot empty">
+                    <span style="color:#bdc3c7; font-style:italic;">Emplacement libre</span>
+                    <div>
+                        <button onclick="claimRole('${roleType}', ${index})" style="background:#2ecc71; color:white; border:none; border-radius:4px; padding:4px 8px; cursor:pointer; font-weight:bold;">Incarner</button>
+                        ${devBtn}
+                    </div>
+                </div>`;
+    }
+}
+
 function renderWaitingRoom() {
     document.getElementById('lobby-container').classList.add('hidden-view');
     document.getElementById('game-container').classList.add('hidden-view');
     document.getElementById('waiting-room-container').classList.remove('hidden-view');
     document.getElementById('waiting-game-id').innerText = gameState.name || `Partie #${currentGameId}`;
     
+    // Rendu du menu des rôles
+    const optionsContainer = document.getElementById('game-options-container');
+    if (gameState.creatorId === myPlayerId) {
+        optionsContainer.innerHTML = `<button onclick="showGameOptions()" style="margin-top: 10px; padding: 8px 15px; background: #8e44ad; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">⚙️ Options de la partie</button>`;
+    } else {
+        optionsContainer.innerHTML = '';
+    }
+
     const listEl = document.getElementById('waiting-players-list');
-    listEl.innerHTML = gameState.players.map((p, i) => {
-        const isOnline = onlinePlayers[p.id];
-        const onlineIcon = isOnline ? "🟢" : "🔴";
-        const avatarImg = p.avatarUrl ? `<img src="${p.avatarUrl}" style="width:24px; height:24px; border-radius:50%; vertical-align:middle; margin-right:8px; border:1px solid ${p.color}; object-fit:cover;">` : '';
-        const lastSeenText = (!isOnline && p.lastConnection) ? ` <span style="font-size:12px; color:#ccc; font-weight:normal;">(Vu: ${formatLastSeen(p.lastConnection)})</span>` : '';
-        return `<div style="padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.2); color: ${p.color}; font-weight: bold;">
-                ${onlineIcon} ${avatarImg}${i === 0 ? '👑 ' : '🧑‍🚀 '}${p.name} ${p.id === myPlayerId ? ' <i>(VOUS)</i>' : ''}${lastSeenText}</div>`;
-    }).join('');
+    listEl.innerHTML = `
+        <div class="role-container">
+            <div class="role-column"><h3 style="margin-top:0; color:#e74c3c;">Le Fugitif (1)</h3>${renderRoleSlot('fugitif', 0, gameState.roles.fugitif)}</div>
+            <div class="role-column"><h3 style="margin-top:0; color:#3498db;">Les Policiers (Max 4)</h3>${gameState.roles.policiers.map((userId, i) => renderRoleSlot('policier', i, userId)).join('')}</div>
+        </div>
+    `;
     
     const startBtn = document.getElementById('start-game-btn');
     const waitMsg = document.getElementById('waiting-msg');
-    if (gameState.players[0].id === myPlayerId) {
+    if (gameState.creatorId === myPlayerId) {
         startBtn.classList.remove('hidden-view'); waitMsg.classList.add('hidden-view');
-        startBtn.disabled = gameState.players.length < 2;
-        startBtn.innerText = gameState.players.length < 2 ? "En attente de joueurs... (1/4)" : "Démarrer la partie !";
-        startBtn.style.background = gameState.players.length < 2 ? "gray" : "#e67e22";
+        const isFugitifTaken = !!gameState.roles.fugitif;
+        const isPoliceTaken = gameState.roles.policiers.some(p => p !== null);
+        const canStart = isFugitifTaken && isPoliceTaken;
+        startBtn.disabled = !canStart;
+        startBtn.innerText = canStart ? "Démarrer la partie !" : "En attente des rôles...";
+        startBtn.style.background = canStart ? "#e67e22" : "gray";
     } else {
         startBtn.classList.add('hidden-view'); waitMsg.classList.remove('hidden-view');
     }
@@ -389,74 +440,332 @@ function renderWaitingRoom() {
 }
 
 function renderMap(svg) {
+    if (window.isAnimatingMove) return; // Bloque le rafraîchissement pendant une animation
+    
     svg.innerHTML = '';
-    const myPlayer = gameState.players[localPlayerIndex];
-    const activePlayer = gameState.players[gameState.currentPlayer];
+    
+    // 1. On dessine les Métros en premier (Large, sous les autres)
+    MAP.links?.filter(l => l.type === 'UNDERGROUND').forEach(link => drawLink(svg, link));
+    
+    // 2. On dessine les Bus par-dessus (Moyen)
+    MAP.links?.filter(l => l.type === 'BUS').forEach(link => drawLink(svg, link));
+    
+    // 3. On dessine les Taxis par-dessus tout (Fin)
+    MAP.links?.filter(l => l.type === 'TAXI').forEach(link => drawLink(svg, link));
+    
+    // 4. Détermination des destinations jouables (si c'est notre tour)
+    const activeChar = gameState.characters ? gameState.characters[gameState.currentPlayerIndex] : null;
+    const isMyTurn = activeChar?.userId === myPlayerId;
+    const currentPos = (activeChar?.role === 'fugitif' && isMyTurn) ? activeChar.secretPosition : activeChar?.position;
+    
+    const policePositions = gameState.characters?.filter(c => c.role === 'policier' && c.position).map(c => c.position) || [];
 
-    MAP.routes.forEach(route => {
-        let isPlayable = localPlayerIndex === gameState.currentPlayer && !gameState.claimedRoutes.some(r => r.id === route.id) && activePlayer.wagons >= route.distance && gameState.cardsDrawnThisTurn === 0;
-        if (isPlayable) {
-            if (route.color === "gris") isPlayable = COLORS.filter(c => c !== "locomotive").some(c => (myPlayer.cards[c] + myPlayer.cards["locomotive"]) >= route.distance);
-            else isPlayable = (myPlayer.cards[route.color] + myPlayer.cards["locomotive"]) >= route.distance;
-        }
-        drawProfessionalRoute(svg, route, isPlayable);
-    });
+    const playableDestinations = {};
+    if (isMyTurn && currentPos && typeof TRANSPORT !== 'undefined') {
+        MAP.links.forEach(l => {
+            if (l.from === currentPos || l.to === currentPos) {
+                const targetId = l.from === currentPos ? l.to : l.from;
+                const transportInfo = TRANSPORT[l.type];
+                
+                if (activeChar.ap >= transportInfo.cost) {
+                    // Règle : Interdiction absolue d'aller sur une case occupée par un Policier !
+                    if (policePositions.includes(targetId)) return;
 
-    myPlayer.destinations.forEach(d => {
-        const vFrom = MAP.villes.find(v => v.id === d.from);
-        const vTo = MAP.villes.find(v => v.id === d.to);
-        if (vFrom && vTo) {
-            const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-            line.setAttribute("x1", vFrom.x); line.setAttribute("y1", vFrom.y);
-            line.setAttribute("x2", vTo.x); line.setAttribute("y2", vTo.y);
-            line.classList.add("mission-line"); svg.appendChild(line);
-        }
-    });
-    MAP.villes.forEach(ville => drawCity(svg, ville));
-}
-
-function drawCity(svg, ville) {
-    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-    circle.setAttribute("cx", ville.x); circle.setAttribute("cy", ville.y); circle.setAttribute("r", "14");
-    circle.setAttribute("fill", "white"); circle.setAttribute("stroke", "#2c3e50"); circle.setAttribute("stroke-width", "3");
-    const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    text.setAttribute("x", ville.x); text.setAttribute("y", ville.y + 30);
-    text.setAttribute("text-anchor", "middle"); text.setAttribute("style", "font-size: 12px; font-weight: bold; fill: #2c3e50;");
-    text.textContent = ville.name;
-    g.appendChild(circle); g.appendChild(text); svg.appendChild(g);
-}
-
-function drawProfessionalRoute(svg, route, isPlayable) {
-    const vFrom = MAP.villes.find(v => v.id === route.from); const vTo = MAP.villes.find(v => v.id === route.to);
-    const dx = vTo.x - vFrom.x; const dy = vTo.y - vFrom.y; const distanceTotale = Math.sqrt(dx * dx + dy * dy);
-    const angle = Math.atan2(dy, dx) * (180 / Math.PI); const nbWagons = route.distance;
-    const wagonWidth = (distanceTotale / nbWagons) - 4; const wagonHeight = 12;
-
-    const routeGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    routeGroup.setAttribute("id", `route-${route.id}`);
-    if (isPlayable) routeGroup.classList.add("highlight-route", "playable-pulse");
-
-    const claimData = gameState.claimedRoutes.find(r => r.id === route.id);
-    for (let i = 0; i < nbWagons; i++) {
-        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        const offset = (i * (wagonWidth + 4)) + 2;
-        rect.setAttribute("x", vFrom.x + (dx * offset / distanceTotale)); rect.setAttribute("y", vFrom.y + (dy * offset / distanceTotale) - (wagonHeight / 2));
-        rect.setAttribute("width", wagonWidth); rect.setAttribute("height", wagonHeight); rect.setAttribute("rx", "2");
-        rect.setAttribute("transform", `rotate(${angle}, ${vFrom.x + (dx * offset / distanceTotale)}, ${vFrom.y + (dy * offset / distanceTotale)})`);
-        rect.classList.add("wagon-unit");
-        if (claimData) {
-            const ownerColor = gameState.players[claimData.owner].color;
-            rect.setAttribute("fill", "#1a252f"); rect.setAttribute("stroke", ownerColor); rect.setAttribute("stroke-width", "3");
-            rect.style.opacity = "1"; rect.style.filter = `drop-shadow(0px 2px 5px ${ownerColor})`;
-        } else {
-            rect.setAttribute("fill", route.color === "gris" ? "#bdc3c7" : (COLOR_MAP[route.color] || route.color)); rect.style.opacity = "0.25";
-        }
-        if (route.isTunnel) { rect.classList.add("tunnel-wagon"); if (!claimData) rect.setAttribute("stroke", "#2c3e50"); }
-        routeGroup.appendChild(rect);
+                    if (!playableDestinations[targetId]) playableDestinations[targetId] = [];
+                    if (!playableDestinations[targetId].some(t => t.type === l.type)) {
+                        playableDestinations[targetId].push({ type: l.type, ...transportInfo });
+                    }
+                }
+            }
+        });
     }
-    routeGroup.onclick = async () => { if (!window.isDraggingMap && await claimRoute(gameState.currentPlayer, route.id)) updateUI(); };
-    svg.appendChild(routeGroup);
+
+    // 5. On dessine les stations en tout dernier pour qu'elles couvrent les lignes
+    MAP.nodes?.forEach(node => drawNode(svg, node, playableDestinations[node.id]));
+
+    // 6. On dessine les pions des joueurs
+    gameState.characters?.forEach(char => {
+        let posId = char.position;
+        
+        // Si c'est notre fugitif, on utilise sa position secrète locale pour l'affichage !
+        if (char.role === 'fugitif' && char.userId === myPlayerId && char.secretPosition) {
+            posId = char.secretPosition;
+        }
+
+        if (posId) {
+            const node = MAP.nodes.find(n => n.id === posId);
+            if (node) drawPawn(svg, node, char);
+        }
+    });
+}
+
+function animateVehicleMove(pathNodeIds, transportType, callback, charId) {
+    const svg = document.getElementById('map-svg');
+    if (!pathNodeIds || pathNodeIds.length < 2) return callback();
+    
+    window.isAnimatingMove = true;
+    
+    if (charId) {
+        const pawn = document.getElementById(`pawn-${charId}`);
+        if (pawn) pawn.style.display = 'none';
+    }
+
+    const rectGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    
+    let vehicleVisual;
+    if (transportType === 'BUS') {
+        vehicleVisual = document.createElementNS("http://www.w3.org/2000/svg", "image");
+        vehicleVisual.setAttribute("href", "Images/Icone_bus.png");
+        vehicleVisual.setAttribute("width", "60"); // Taille de l'image
+        vehicleVisual.setAttribute("height", "60");
+        vehicleVisual.setAttribute("x", "-30"); // Décalage pour centrer exactement (Moitié de la largeur)
+        vehicleVisual.setAttribute("y", "-30"); // Décalage pour centrer (Moitié de la hauteur)
+    } else {
+        vehicleVisual = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        vehicleVisual.setAttribute("width", "24");
+        vehicleVisual.setAttribute("height", "14");
+        vehicleVisual.setAttribute("rx", "4");
+        vehicleVisual.setAttribute("fill", TRANSPORT[transportType].color);
+        vehicleVisual.setAttribute("stroke", "white");
+        vehicleVisual.setAttribute("stroke-width", "2");
+        vehicleVisual.setAttribute("x", "-12"); // Centrage
+        vehicleVisual.setAttribute("y", "-7");
+    }
+    
+    vehicleVisual.setAttribute("class", "vehicle-vibrate"); // Conserve la petite vibration
+    
+    rectGroup.appendChild(vehicleVisual);
+    svg.appendChild(rectGroup);
+    
+    // Vitesse selon le transport (RALENTIE pour mieux apprécier l'animation)
+    let durationPerSegment = 1000;
+    if (transportType === 'TAXI') durationPerSegment = 1800; // Très lent
+    else if (transportType === 'BUS') durationPerSegment = 1200; // Moyen
+    else if (transportType === 'UNDERGROUND') durationPerSegment = 800; // Rapide
+    else if (transportType === 'BLACK') durationPerSegment = 1400;
+    
+    const totalDuration = durationPerSegment * (pathNodeIds.length - 1);
+    if (transportType === 'BUS') {
+        playSoundWithFade('Audio/Démarrage_bus.mp3', totalDuration);
+    }
+
+    let currentStep = 0;
+    
+    function moveNext() {
+        if (currentStep >= pathNodeIds.length - 1) {
+            rectGroup.remove();
+            window.isAnimatingMove = false;
+            if (callback) callback();
+            return;
+        }
+        const n1 = MAP.nodes.find(n => n.id === pathNodeIds[currentStep]);
+        const n2 = MAP.nodes.find(n => n.id === pathNodeIds[currentStep + 1]);
+        
+        const angle = Math.atan2(n2.y - n1.y, n2.x - n1.x) * (180 / Math.PI);
+        
+        let transform1, transform2;
+        if (transportType === 'BUS') {
+            // Le bus reste horizontal, effet miroir s'il va vers la gauche
+            const scaleX = n2.x < n1.x ? -1 : 1;
+            transform1 = `translate(${n1.x}, ${n1.y}) scale(${scaleX}, 1)`;
+            transform2 = `translate(${n2.x}, ${n2.y}) scale(${scaleX}, 1)`;
+        } else {
+            // Les autres véhicules s'inclinent pour suivre la route
+            transform1 = `translate(${n1.x}, ${n1.y}) rotate(${angle})`;
+            transform2 = `translate(${n2.x}, ${n2.y}) rotate(${angle})`;
+        }
+
+        rectGroup.style.transition = 'none';
+        rectGroup.setAttribute("transform", transform1);
+        rectGroup.getBoundingClientRect(); // Force le navigateur à enregistrer la position de départ
+        
+        rectGroup.style.transition = `transform ${durationPerSegment}ms linear`;
+        rectGroup.setAttribute("transform", transform2);
+        
+        setTimeout(() => { currentStep++; moveNext(); }, durationPerSegment);
+    }
+    moveNext();
+}
+
+function drawPawn(svg, node, char) {
+    const isActive = gameState.characters[gameState.currentPlayerIndex]?.id === char.id;
+    
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    g.setAttribute("id", `pawn-${char.id}`);
+    g.setAttribute("style", `transform-origin: ${node.x}px ${node.y}px; pointer-events: none;`);
+    
+    // Si le pion vient d'arriver de son voyage, on le fait sauter !
+    if (char.id === window.lastArrivalCharId) {
+        g.setAttribute("class", "pawn-jump");
+        setTimeout(() => {
+            if (isActive) g.setAttribute("class", "pawn-active");
+            else g.removeAttribute("class");
+        }, 500); // L'animation dure 0.5s
+        window.lastArrivalCharId = null;
+    } else if (isActive) {
+        g.setAttribute("class", "pawn-active");
+    }
+
+        if (char.role === 'policier') {
+            const imgSize = 50;
+            const img = document.createElementNS("http://www.w3.org/2000/svg", "image");
+            img.setAttribute("href", "Images/Icone_policier_jaune.png");
+            img.setAttribute("width", imgSize);
+            img.setAttribute("height", imgSize);
+            
+            img.setAttribute("x", node.x - (imgSize / 2));
+            img.setAttribute("y", node.y - 12 - (imgSize / 2));
+            
+            img.setAttribute("style", `filter: drop-shadow(0px 3px 4px rgba(0,0,0,0.6)) drop-shadow(0px 0px 6px ${char.color});`);
+            
+            g.appendChild(img);
+        } else {
+            const imgSize = 50;
+            const img = document.createElementNS("http://www.w3.org/2000/svg", "image");
+            img.setAttribute("href", "Images/Icone_fugitif.png");
+            img.setAttribute("width", imgSize);
+            img.setAttribute("height", imgSize);
+            
+            img.setAttribute("x", node.x - (imgSize / 2));
+            img.setAttribute("y", node.y - 12 - (imgSize / 2));
+            
+            if (!char.position) {
+                // Mode Caché : Légère transparence et halo rouge
+                img.setAttribute("style", `filter: drop-shadow(0px 3px 4px rgba(0,0,0,0.6)) drop-shadow(0px 0px 8px #e74c3c); opacity: 0.7;`);
+            } else {
+                // Mode Révélé : Opaque avec le halo classique
+                img.setAttribute("style", `filter: drop-shadow(0px 3px 4px rgba(0,0,0,0.6)) drop-shadow(0px 0px 6px ${char.color});`);
+            }
+            g.appendChild(img);
+    }
+
+    svg.appendChild(g);
+}
+
+function drawLink(svg, link) {
+    const fromNode = MAP.nodes.find(n => n.id === link.from);
+    const toNode = MAP.nodes.find(n => n.id === link.to);
+    if (!fromNode || !toNode) return;
+
+    const fullPath = [link.from, ...(link.path || []), link.to];
+    const points = [];
+    fullPath.forEach(nodeId => {
+        const n = MAP.nodes.find(n => n.id === nodeId);
+        if (n) points.push(`${n.x},${n.y}`);
+    });
+
+    const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    polyline.setAttribute("points", points.join(" "));
+    polyline.setAttribute("fill", "none");
+
+    const transportInfo = TRANSPORT[link.type];
+    let color = transportInfo ? transportInfo.color : "white";
+    let width = 2;
+    let opacity = 1;
+
+    // Différenciation élégante des lignes
+    if (link.type === 'UNDERGROUND') {
+        width = 8; opacity = 0.6;
+    } else if (link.type === 'BUS') {
+        width = 5; opacity = 0.8;
+    } else if (link.type === 'TAXI') {
+        width = 2; opacity = 1;
+    }
+
+    polyline.setAttribute("stroke", color);
+    polyline.setAttribute("stroke-width", width);
+    polyline.setAttribute("opacity", opacity);
+    polyline.setAttribute("stroke-linecap", "round");
+    polyline.setAttribute("stroke-linejoin", "round");
+    
+    svg.appendChild(polyline);
+}
+
+function drawNode(svg, node, availableTransports) {
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    
+    if (availableTransports && availableTransports.length > 0) {
+        const pulse = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        pulse.setAttribute("cx", node.x); pulse.setAttribute("cy", node.y); pulse.setAttribute("r", "22");
+        pulse.setAttribute("fill", "transparent");
+        pulse.setAttribute("stroke", "#f1c40f"); 
+        pulse.setAttribute("stroke-width", "4");
+        pulse.classList.add("playable-node");
+        g.appendChild(pulse);
+        
+        g.style.cursor = "pointer";
+        g.onclick = async () => {
+            if (window.isDraggingMap) return;
+            const options = availableTransports.map(t => ({
+                label: `${t.name} (-${t.cost} PA)`,
+                value: t.type,
+                bgColor: t.color
+            }));
+            options.push({ label: "Annuler", value: null, class: "cancel" });
+            
+            const chosenTransport = await showModal(`Rejoindre la station ${node.id} ?\nChoisissez votre transport :`, options);
+            
+            if (chosenTransport) {
+                const activeChar = gameState.characters[gameState.currentPlayerIndex];
+                const tInfo = TRANSPORT[chosenTransport];
+                
+                if (activeChar.ap < tInfo.cost) return alert("Pas assez de PA pour ce transport !");
+                
+                const currentPos = (activeChar.role === 'fugitif' && activeChar.userId === myPlayerId) ? activeChar.secretPosition : activeChar.position;
+                
+                const link = MAP.links.find(l => 
+                    l.type === chosenTransport && 
+                    ((l.from === currentPos && l.to === node.id) || (l.to === currentPos && l.from === node.id))
+                );
+                
+                let pathIds = [currentPos, node.id];
+                if (link) {
+                    pathIds = [link.from, ...(link.path || []), link.to];
+                    if (link.to === currentPos) pathIds.reverse(); // Si on parcourt la route à l'envers
+                }
+                
+                window.lastArrivalCharId = activeChar.id;
+
+                animateVehicleMove(pathIds, chosenTransport, () => {
+                    moveToNode(node.id, chosenTransport); // Le vrai déplacement logique
+                }, activeChar.id);
+            }
+        };
+    }
+
+    const hasUnderground = MAP.links.some(l => l.type === 'UNDERGROUND' && (l.from === node.id || l.to === node.id));
+    const hasBus = MAP.links.some(l => l.type === 'BUS' && (l.from === node.id || l.to === node.id));
+    const hasTaxi = MAP.links.some(l => l.type === 'TAXI' && (l.from === node.id || l.to === node.id));
+
+    let currentRadius = 18;
+    if (hasUnderground) {
+        const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        c.setAttribute("cx", node.x); c.setAttribute("cy", node.y); c.setAttribute("r", currentRadius); c.setAttribute("fill", TRANSPORT.UNDERGROUND.color); g.appendChild(c);
+        currentRadius -= 3;
+    }
+    if (hasBus) {
+        const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        c.setAttribute("cx", node.x); c.setAttribute("cy", node.y); c.setAttribute("r", currentRadius); c.setAttribute("fill", TRANSPORT.BUS.color); g.appendChild(c);
+        currentRadius -= 3;
+    }
+    if (hasTaxi) {
+        const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        c.setAttribute("cx", node.x); c.setAttribute("cy", node.y); c.setAttribute("r", currentRadius); c.setAttribute("fill", TRANSPORT.TAXI.color); g.appendChild(c);
+    }
+
+    const center = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    center.setAttribute("cx", node.x); center.setAttribute("cy", node.y); center.setAttribute("r", "11");
+    center.setAttribute("fill", "#ecf0f1");
+    g.appendChild(center);
+
+    const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    text.setAttribute("x", node.x); text.setAttribute("y", node.y + 4); // +4 pour centrer verticalement
+    text.setAttribute("text-anchor", "middle"); 
+    text.setAttribute("style", "font-size: 12px; font-weight: bold; fill: #2c3e50; font-family: sans-serif; pointer-events: none;");
+    text.textContent = node.id;
+    
+    g.appendChild(text); 
+    svg.appendChild(g);
 }
 
 function updateUI() {
@@ -465,94 +774,87 @@ function updateUI() {
     document.getElementById('lobby-container').classList.add('hidden-view');
     document.getElementById('game-container').classList.remove('hidden-view');
 
-    const myPlayer = gameState.players[localPlayerIndex];
+    const activeChar = gameState.characters[gameState.currentPlayerIndex];
     const turnBanner = document.getElementById('turn-banner');
     if (turnBanner) {
-        if (localPlayerIndex === gameState.currentPlayer) {
-            turnBanner.innerText = "🟢 C'est à vous de jouer !"; turnBanner.className = "turn-active";
-            document.querySelector('.draw-area').classList.remove('disabled-turn');
+        if (activeChar?.userId === myPlayerId) {
+            turnBanner.innerHTML = `🟢 C'est à vous ! <button onclick="skipTurn()" style="margin-left:10px; padding:4px 8px; border-radius:4px; border:none; background:white; color:#2ecc71; font-weight:bold; cursor:pointer; box-shadow:0 2px 4px rgba(0,0,0,0.2);">Passer (+2 PA)</button>`; turnBanner.className = "turn-active";
         } else {
-            turnBanner.innerText = "🔴 En attente de " + gameState.players[gameState.currentPlayer].name + "..."; turnBanner.className = "turn-waiting";
-            document.querySelector('.draw-area').classList.add('disabled-turn');
+            turnBanner.innerText = "🔴 En attente de " + (activeChar ? activeChar.name : "...") + "..."; turnBanner.className = "turn-waiting";
         }
     }
-    
+
     const playersContainer = document.getElementById('players-info-container');
     if (playersContainer) {
         playersContainer.innerHTML = '';
-                
-        // NOUVEAU : Calcul des chemins les plus longs pour déterminer le gagnant actuel
-        const longestRoutes = gameState.players.map((_, i) => getLongestRouteForPlayer(i));
-        const maxLongestRoute = Math.max(0, ...longestRoutes);
         
-        gameState.players.forEach((p, index) => {
-            const isActive = index === gameState.currentPlayer;
+        const fugitifContainer = document.createElement('div');
+        fugitifContainer.style.display = 'flex';
+        fugitifContainer.style.marginRight = '10px';
+        
+        const policeContainer = document.createElement('div');
+        policeContainer.style.display = 'flex';
+        policeContainer.style.gap = '5px';
+        policeContainer.style.flexWrap = 'wrap';
+        policeContainer.style.flex = '1';
+        policeContainer.style.borderLeft = '2px dashed rgba(255,255,255,0.3)';
+        policeContainer.style.paddingLeft = '10px';
+        policeContainer.style.alignItems = 'center';
+
+        gameState.characters.forEach((char, index) => {
+            const isActive = index === gameState.currentPlayerIndex;
             const cardDiv = document.createElement('div');
             cardDiv.className = `player-info-card ${isActive ? 'active' : ''}`;
-            cardDiv.style.borderTop = `4px solid ${p.color}`;
-            if (isActive) { cardDiv.style.borderColor = p.color; cardDiv.style.boxShadow = `0 0 15px ${p.color}80`; }
-            const isOnline = onlinePlayers[p.id]; const onlineIcon = isOnline ? "🟢" : "🔴";
-            const avatarImg = p.avatarUrl ? `<img src="${p.avatarUrl}" style="width:16px; height:16px; border-radius:50%; vertical-align:middle; margin-right:4px; object-fit:cover;">` : '';
-            const lastSeenText = (!isOnline && p.lastConnection) ? `<div style="font-size:9px; color:#bdc3c7; margin-top:-5px; margin-bottom:4px; font-weight:normal; line-height: 1;">Vu: ${formatLastSeen(p.lastConnection)}</div>` : '';
-                        
-            const pLongest = longestRoutes[index];
-            const isLongest = pLongest > 0 && pLongest === maxLongestRoute;
-            const longestStyle = isLongest ? 'color: #f1c40f; text-shadow: 0 0 5px rgba(241,196,15,0.8);' : 'color: #bdc3c7; opacity: 0.8;';
-            const longestIcon = isLongest ? '🏆' : '🛤️';
+            cardDiv.style.borderTop = `4px solid ${char.color}`;
+            if (isActive) { cardDiv.style.borderColor = char.color; cardDiv.style.boxShadow = `0 0 15px ${char.color}80`; }
+            const user = gameState.users.find(u => u.id === char.userId);
+            const isOnline = user && onlinePlayers[user.id]; const onlineIcon = isOnline ? "🟢" : "🔴";
+            const avatarImg = user?.avatarUrl ? `<img src="${user.avatarUrl}" style="width:16px; height:16px; border-radius:50%; vertical-align:middle; margin-right:4px; object-fit:cover;">` : '';
             
-            
+            if (char.role === 'fugitif') {
+                cardDiv.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+                cardDiv.style.border = `1px solid ${char.color}`;
+            }
+
+            let displayPos = char.position || '?';
+            if (char.role === 'fugitif' && char.userId === myPlayerId && char.secretPosition) {
+                displayPos = char.secretPosition + ' 🕵️'; // Montre la position avec un emoji pour rappeler le secret
+            }
+
+            const apPercent = (char.ap / char.maxAp) * 100;
+            const apColor = char.role === 'fugitif' ? 'linear-gradient(90deg, #c0392b, #e74c3c)' : 'linear-gradient(90deg, #d35400, #f39c12)';
+
             cardDiv.innerHTML = `
-                <div class="player-name" ${isActive ? `style="color: ${p.color};"` : ''}>${onlineIcon} ${avatarImg}${p.name}${index === localPlayerIndex ? " (VOUS)" : ""}${isActive && gameState.cardsDrawnThisTurn > 0 ? " (1 pioche)" : ""}</div>
-                ${lastSeenText}
+                <div class="player-name" ${isActive ? `style="color: ${char.color};"` : ''}>${onlineIcon} ${avatarImg}${char.name}</div>
                 <div class="player-stats">
-                    <div class="stat-item" title="Score"><span class="stat-icon">⭐</span><span class="stat-value">${p.score}</span></div>
-                    <div class="stat-item" title="Wagons restants"><span class="stat-icon">🚂</span><span class="stat-value">${p.wagons}</span></div>
-                    <div class="stat-item" title="Cartes en main"><span class="stat-icon">🃏</span><span class="stat-value">${Object.values(p.cards).reduce((a, b) => a + b, 0)}</span></div>
-                    <div class="stat-item" title="Missions secrètes"><span class="stat-icon">🎯</span><span class="stat-value">${p.destinations.length}</span></div>
-                    <div class="stat-item" style="grid-column: span 2; margin-top: 4px; padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.1); ${longestStyle}" title="Chemin le plus long"><span class="stat-icon">${longestIcon}</span><span class="stat-value" style="${longestStyle}">${pLongest}</span></div>
+                    <div class="stat-item" style="justify-content: space-between; padding: 0 5px;" title="Position"><span class="stat-icon">📍</span><span class="stat-value">${displayPos}</span></div>
+                    <div class="ap-container" title="Points d'Action">
+                        <div class="ap-bar" style="width: ${apPercent}%; background: ${apColor};"></div>
+                        <div class="ap-text">⚡ ${char.ap} / ${char.maxAp} PA</div>
+                    </div>
                 </div>
             `;
-            playersContainer.appendChild(cardDiv);
+            
+            if (char.role === 'fugitif') {
+                fugitifContainer.appendChild(cardDiv);
+            } else {
+                policeContainer.appendChild(cardDiv);
+            }
         });
+        
+        playersContainer.appendChild(fugitifContainer);
+        playersContainer.appendChild(policeContainer);
     }
 
-    const destContainer = document.getElementById('current-destinations');
-    if (destContainer) {
-        destContainer.innerHTML = '';
-        if (myPlayer.destinations.length > 0) myPlayer.destinations.forEach(d => {
-            const span = document.createElement('span'); span.className = 'mission-item'; span.innerText = `${MAP.villes.find(v => v.id === d.from).name} - ${MAP.villes.find(v => v.id === d.to).name}`; destContainer.appendChild(span);
-        }); else destContainer.innerText = "Aucune";
-    }
-
+    document.getElementById('travel-log-sidebar').classList.remove('hidden-view');
     renderMap(document.getElementById('map-svg'));
-
-    const handContainer = document.getElementById('player-hand');
-    handContainer.innerHTML = '';
-    Object.keys(myPlayer.cards).forEach(color => {
-        if (myPlayer.cards[color] > 0) for (let i = 0; i < myPlayer.cards[color]; i++) {
-            const cardDiv = document.createElement('div'); cardDiv.className = `card-visual`;
-            if (color === "locomotive") { cardDiv.classList.add("loco-card"); cardDiv.innerText = "J"; } 
-            else { cardDiv.style.backgroundColor = COLOR_MAP[color] || color; cardDiv.innerText = INITIALS_MAP[color] || color.charAt(0).toUpperCase(); }
-            cardDiv.style.transform = `rotate(${(i * 2) - 5}deg)`; handContainer.appendChild(cardDiv);
-        }
-    });
-
-    const riverContainer = document.getElementById('river');
-    if (riverContainer) {
-        riverContainer.innerHTML = '';
-        gameState.faceUpCards.forEach((color, index) => {
-            const cardDiv = document.createElement('div'); cardDiv.className = `card-visual river-card`;
-            if (color === "locomotive") {
-                cardDiv.classList.add("loco-card"); cardDiv.innerText = "J";
-                if (gameState.cardsDrawnThisTurn > 0) cardDiv.classList.add("disabled-card"); else cardDiv.onclick = (e) => drawFromRiver(index, e);
-            } else { cardDiv.style.backgroundColor = COLOR_MAP[color] || color; cardDiv.innerText = INITIALS_MAP[color] || color.charAt(0).toUpperCase(); cardDiv.onclick = (e) => drawFromRiver(index, e); }
-            riverContainer.appendChild(cardDiv);
-        });
-    }
-
-    if (document.getElementById('deck')) document.getElementById('deck').innerText = `Pioche\n(${gameState.deck.length})`;
-    if (document.getElementById('dest-deck')) document.getElementById('dest-deck').innerText = `Missions\n(${gameState.destinationDeck.length})`;
-    if (document.getElementById('discard')) document.getElementById('discard').innerText = `Défausse\n(${gameState.discardPile.length})`;
     updateHistoryUI();
     updateChatUI();
+    updateTravelLogUI();
+
+    if (gameState.status === 'finished' && !window.hasShownEndModal) {
+        window.hasShownEndModal = true;
+        const title = gameState.winner?.team === 'police' ? "🚨 LA POLICE GAGNE 🚨" : "🚁 LE FUGITIF S'ÉCHAPPE 🚁";
+        showModal(`${title}\n\n${gameState.winner?.reason || 'La partie est terminée.'}`);
+    }
 }

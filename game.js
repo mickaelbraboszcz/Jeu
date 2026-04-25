@@ -5,24 +5,27 @@ let myAvatarUrl = null;
 
 let gameState = {
     status: 'waiting', // 'waiting' ou 'playing'
-    currentPlayer: 0,
+    creatorId: null,
+    options: {}, // Configuration de la partie
     turnCount: 1, // Compteur du nombre de tours global
-    cardsDrawnThisTurn: 0, // Compte les cartes piochées pendant le tour
     history: [], // Stocke les logs d'actions
     chat: [], // Stocke les messages textuels
-    players: [], // Rempli dynamiquement
-    claimedRoutes: [],
-    deck: [],
-    destinationDeck: [],
-    discardPile: [], // La défausse
-    faceUpCards: [] // La rivière de 5 cartes
+    fugitiveMoves: [], // Carnet de route du Fugitif
+    users: [], // Les joueurs humains connectés au salon
+    roles: {
+        fugitif: null, // userId
+        policiers: [null, null, null, null] // array of userIds
+    },
+    lastAction: null, // Trace le dernier déplacement pour l'animation réseau
+    characters: [], // Les pions sur le plateau (Créés au démarrage)
+    currentPlayerIndex: 0 // A qui le tour dans le tableau characters
 };
 
 let currentGameId = null;
-let localPlayerIndex = 0; // Définit si ce navigateur est le Joueur 1 (0) ou le Joueur 2 (1)
 
 let gameChannel = null;
 let onlinePlayers = {}; // Stocke les ID des joueurs actuellement connectés
+let mySecretPosition = null; // Stockage RAM ultra-rapide de la position
 
 // --- MULTIJOUEUR SUPABASE ---
 
@@ -47,7 +50,7 @@ function subscribeToGame(id) {
     });
 
     gameChannel
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games', filter: 'id=eq.' + id }, payload => {
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games', filter: 'id=eq.' + id }, async payload => {
             console.log("Mise à jour reçue de l'adversaire !");
             
             // On mémorise la date du dernier log AVANT la mise à jour
@@ -57,25 +60,40 @@ function subscribeToGame(id) {
             const oldChat = gameState.chat || [];
             const lastOldChatTime = oldChat.length > 0 ? oldChat[oldChat.length - 1].timestamp : "2000-01-01";
             
+            const oldLastAction = gameState.lastAction;
             gameState = payload.new.state;
+            const newLastAction = gameState.lastAction;
             
+            const myFugitive = gameState.characters?.find(c => c.userId === myPlayerId && c.role === 'fugitif');
+            if (myFugitive && gameState.status === 'playing') {
+                await ensureFugitiveSecret();
+                myFugitive.secretPosition = mySecretPosition;
+            }
+
             // On cherche toutes les actions plus récentes que notre ancienne date
             const newHistory = gameState.history || [];
             const newItems = newHistory.filter(item => item.timestamp > lastOldTime);
             
             // On affiche un toast pour chaque nouvelle action qui ne vient pas de nous
             newItems.forEach(item => {
-                if (item.player !== localPlayerIndex) showToastFromHistory(item);
+                if (item.userId !== myPlayerId) showToastFromHistory(item);
             });
 
             // Idem pour le chat
             const newChat = gameState.chat || [];
             const newChatItems = newChat.filter(item => item.timestamp > lastOldChatTime);
             newChatItems.forEach(item => {
-                if (item.player !== localPlayerIndex) showToastFromChat(item);
+                if (item.userId !== myPlayerId) showToastFromChat(item);
             });
             
-            updateUI();
+            const isNewAction = newLastAction && (!oldLastAction || newLastAction.timestamp !== oldLastAction.timestamp);
+            
+            if (isNewAction && newLastAction.userId !== myPlayerId && typeof triggerRemoteAnimation === 'function') {
+                triggerRemoteAnimation(newLastAction, async () => { updateUI(); await checkWinConditions(); });
+            } else {
+                updateUI();
+                checkWinConditions();
+            }
         })
         .on('presence', { event: 'sync' }, () => {
             // Met à jour la liste des personnes en ligne dès que quelqu'qu'un arrive ou part
@@ -95,31 +113,38 @@ function leaveGameToLobby() {
     if (gameChannel) supabaseClient.removeChannel(gameChannel);
     gameChannel = null;
     currentGameId = null;
+    mySecretPosition = null;
+    window.isAnimatingMove = false;
+    window.hasShownEndModal = false;
     showLobby();
+}
+
+async function ensureFugitiveSecret() {
+    if (mySecretPosition) return;
+    
+    // On essaie de lire la position secrète depuis notre nouvelle table protégée
+    const { data } = await supabaseClient.from('game_secrets').select('secret_position').eq('game_id', currentGameId).single();
+    if (data) {
+        mySecretPosition = data.secret_position;
+    } else if (gameState.availableStarts && gameState.availableStarts.length > 0) {
+        // S'il n'y a rien en base, on crée la position et on l'insère secrètement !
+        mySecretPosition = gameState.availableStarts[Math.floor(Math.random() * gameState.availableStarts.length)];
+        await supabaseClient.from('game_secrets').insert({ game_id: currentGameId, fugitive_id: myPlayerId, secret_position: mySecretPosition });
+    }
 }
 
 // --- HISTORIQUE (LOGS) ---
 
-function addHistory(actionPayload, playerIndex) {
+function addHistory(actionPayload, userId) {
     if (!gameState.history) gameState.history = [];
 
     if (typeof actionPayload === 'string') {
         actionPayload = { text: actionPayload };
     }
 
-    // Fusionne avec le dernier log si c'est la 2ème carte piochée du tour
-    if (actionPayload.type === 'draw' && gameState.cardsDrawnThisTurn > 0 && gameState.history.length > 0) {
-        let lastLog = gameState.history[gameState.history.length - 1];
-        if (lastLog.player === playerIndex && lastLog.type === 'draw') {
-            lastLog.cards.push(...actionPayload.cards);
-            lastLog.timestamp = new Date().toISOString();
-            return; // On arrête là : l'action est fusionnée
-        }
-    }
-
     gameState.history.push({
         ...actionPayload,
-        player: playerIndex,
+        userId: userId,
         timestamp: new Date().toISOString()
     });
     // On limite l'historique aux 50 dernières actions pour éviter de surcharger la base de données
@@ -134,7 +159,7 @@ function sendChatMessage(event) {
     
     if (!gameState.chat) gameState.chat = [];
     gameState.chat.push({
-        player: localPlayerIndex,
+        userId: myPlayerId,
         text: text,
         timestamp: new Date().toISOString()
     });
@@ -150,350 +175,144 @@ function sendChatMessage(event) {
 
 // --- LOGIQUE ---
 
-function initDeck() {
-    let deck = [];
-    gameState.discardPile = [];
-    const baseColors = COLORS.filter(c => c !== "locomotive");
-    
-    // 12 cartes de chaque couleur basique
-    baseColors.forEach(color => {
-        for (let i = 0; i < 12; i++) deck.push(color);
-    });
-    // 14 Locomotives (Jokers)
-    for (let i = 0; i < 14; i++) deck.push("locomotive");
+async function moveToNode(targetNodeId, transportType) {
+    const activeChar = gameState.characters[gameState.currentPlayerIndex];
+    if (activeChar.userId !== myPlayerId) return;
 
-    // Mélange du paquet (Algorithme Fisher-Yates)
-    for (let i = deck.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [deck[i], deck[j]] = [deck[j], deck[i]];
-    }
-    gameState.deck = deck;
-}
+    const transport = TRANSPORT[transportType];
+    if (activeChar.ap < transport.cost) return alert("Pas assez de PA !");
 
-function initDestinations() {
-    let deck = [...DESTINATIONS_DATA];
-    for (let i = deck.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [deck[i], deck[j]] = [deck[j], deck[i]];
-    }
-    gameState.destinationDeck = deck;
-}
+    activeChar.ap -= transport.cost; // Déduction des PA
 
-async function drawDestinationsAction() {
-    if (localPlayerIndex !== gameState.currentPlayer) {
-        return showModal("Ce n'est pas à ton tour de jouer !");
-    }
+    const currentPos = activeChar.position; // Position de départ connue
 
-    if (gameState.cardsDrawnThisTurn > 0) {
-        showModal("Vous avez déjà commencé à piocher des wagons, vous ne pouvez pas tirer de missions !");
-        return;
-    }
-    if (gameState.destinationDeck.length === 0) {
-        showModal("Plus de cartes destination !");
-        return;
-    }
-
-    const drawnCards = [];
-    // On tire 3 cartes (ou moins s'il n'y en a plus assez)
-    for(let i=0; i<3; i++) {
-        if (gameState.destinationDeck.length > 0) drawnCards.push(gameState.destinationDeck.pop());
-    }
-
-    const items = drawnCards.map(d => {
-        const vFrom = MAP.villes.find(v => v.id === d.from).name;
-        const vTo = MAP.villes.find(v => v.id === d.to).name;
-        return { label: `${vFrom} à ${vTo} (${d.points} pts)`, value: d };
-    });
-
-    const minKeep = Math.min(1, drawnCards.length);
-    const selectedCards = await showMultiSelectModal(`Choisissez au moins ${minKeep} carte(s) destination :`, items, minKeep);
-
-    const player = gameState.players[gameState.currentPlayer];
-    selectedCards.forEach(c => player.destinations.push(c));
-    
-    addHistory({ type: 'mission', count: selectedCards.length }, gameState.currentPlayer);
-
-    // Les cartes non retenues retournent SOUS la pioche
-    drawnCards.forEach(c => {
-        if (!selectedCards.includes(c)) gameState.destinationDeck.unshift(c);
-    });
-
-    // Animation : Vol du paquet de missions vers le tableau des scores
-    animateFlyingCard(document.getElementById('dest-deck'), document.getElementById('missions-display'), 'dest');
-
-    endTurn(); // L'action de piocher des missions termine le tour
-}
-
-// Remélange la défausse dans la pioche si celle-ci est vide
-function tryReshuffle() {
-    if (gameState.deck.length === 0 && gameState.discardPile.length > 0) {
-        gameState.deck = gameState.discardPile;
-        gameState.discardPile = [];
-        // Mélange
-        for (let i = gameState.deck.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [gameState.deck[i], gameState.deck[j]] = [gameState.deck[j], gameState.deck[i]];
-        }
-    }
-}
-
-function refillRiver() {
-    // Remplacer les cartes prises (marquées par null) à leur position exacte
-    for (let i = 0; i < gameState.faceUpCards.length; i++) {
-        if (gameState.faceUpCards[i] === null) {
-            tryReshuffle();
-            if (gameState.deck.length > 0) {
-                gameState.faceUpCards[i] = gameState.deck.pop();
-            } else {
-                gameState.faceUpCards.splice(i, 1);
-                i--; // Ajuster l'index après suppression
-            }
-        }
-    }
-
-    // Remplir jusqu'à avoir 5 cartes (utile à l'initialisation ou après la défausse des 3 locos)
-    while (gameState.faceUpCards.length < 5) {
-        tryReshuffle();
-        if (gameState.deck.length === 0) break; // S'il n'y a vraiment plus rien
-        gameState.faceUpCards.push(gameState.deck.pop());
-    }
-    
-    // Règle spéciale : si 3 Locomotives (ou plus) sont face visible, on défausse tout
-    const locos = gameState.faceUpCards.filter(c => c === "locomotive").length;
-    if (locos >= 3) {
-        gameState.discardPile.push(...gameState.faceUpCards); // Les 5 cartes vont dans la défausse
-        gameState.faceUpCards = [];
-        refillRiver();
-    }
-}
-
-function drawFromDeck() {
-    if (localPlayerIndex !== gameState.currentPlayer) {
-        return showModal("Ce n'est pas à ton tour de jouer !");
-    }
-
-    tryReshuffle();
-    if (gameState.deck.length === 0) {
-        showModal("La pioche ET la défausse sont vides !");
-        return;
-    }
-    
-    const card = gameState.deck.pop();
-    gameState.players[gameState.currentPlayer].cards[card]++;
-    
-    addHistory({ type: 'draw', cards: ['deck'] }, gameState.currentPlayer);
-
-    // Animation : Vol de la pioche vers la main du joueur
-    animateFlyingCard(document.getElementById('deck'), document.getElementById('player-hand'), 'deck');
-    
-    gameState.cardsDrawnThisTurn++;
-    if (gameState.cardsDrawnThisTurn >= 2) endTurn();
-    else {
-        refillRiver();
-        saveGameState();
-        updateUI();
-    }
-}
-
-function drawFromRiver(index, event) {
-    if (localPlayerIndex !== gameState.currentPlayer) {
-        return showModal("Ce n'est pas à ton tour de jouer !");
-    }
-
-    const card = gameState.faceUpCards[index];
-    if (!card) return;
-
-    if (card === "locomotive") {
-        if (gameState.cardsDrawnThisTurn > 0) {
-            // Cas proactif : avec l'UI, ce code ne devrait plus être atteignable
-            return;
-        }
-    }
-    
-    addHistory({ type: 'draw', cards: [card] }, gameState.currentPlayer);
-
-    if (card === "locomotive") {
-        gameState.cardsDrawnThisTurn += 2; // Le Joker prend les 2 actions du tour
-    } else {
-        gameState.cardsDrawnThisTurn++;
-    }
-
-    gameState.players[gameState.currentPlayer].cards[card]++;
-    gameState.faceUpCards[index] = null; // Marque l'emplacement pour le remplacer exactement au même endroit
-    
-    // Animation : Vol de la rivière vers la main
-    if (event) {
-        animateFlyingCard(event.currentTarget, document.getElementById('player-hand'), card);
-    }
-
-    refillRiver();
-
-    if (gameState.cardsDrawnThisTurn >= 2) endTurn();
-    else {
-        saveGameState();
-        updateUI();
-    }
-}
-
-function endTurn() {
-    gameState.cardsDrawnThisTurn = 0;
-    gameState.turnCount = (gameState.turnCount || 1) + 1; // Incrémente le tour
-    gameState.players[gameState.currentPlayer].lastConnection = new Date().toISOString(); // Met à jour la dernière action du joueur
-    gameState.currentPlayer = (gameState.currentPlayer + 1) % gameState.players.length; // Passe au joueur suivant
-    saveGameState(); // Sauvegarde finale à la fin du tour complet
-    updateUI();
-}
-
-// Fonction pour payer le coût avec ajout possible de Jokers
-function payCost(player, color, totalCost) {
-    let colorPaid = Math.min(player.cards[color], totalCost);
-    let locoPaid = totalCost - colorPaid;
-    player.cards[color] -= colorPaid;
-    player.cards["locomotive"] -= locoPaid;
-    for(let i=0; i<colorPaid; i++) gameState.discardPile.push(color);
-    for(let i=0; i<locoPaid; i++) gameState.discardPile.push("locomotive");
-
-    // --- Animation Visuelle ---
-    // On fait voler une carte symbolique vers la défausse pour illustrer le paiement
-    const handEl = document.getElementById('player-hand');
-    const discardEl = document.getElementById('discard');
-    if (handEl && discardEl) animateFlyingCard(handEl, discardEl, color);
-}
-
-async function claimRoute(playerIndex, routeId) {
-    if (localPlayerIndex !== gameState.currentPlayer) {
-        return showModal("Ce n'est pas à ton tour de jouer !");
-    }
-
-    if (gameState.cardsDrawnThisTurn > 0) {
-        return false;
-    }
-
-    const player = gameState.players[playerIndex];
-    const route = MAP.routes.find(r => r.id === routeId);
-
-    if (gameState.claimedRoutes.some(r => r.id === routeId)) return false;
-
-    if (player.wagons < route.distance) {
-        showModal("Pas assez de wagons !");
-        return false;
-    }
-
-    // Gestion de la couleur choisie (notamment pour les routes grises)
-    let chosenColor = route.color;
-    if (route.color === "gris") {
-        const baseColors = COLORS.filter(c => c !== "locomotive");
-        const colorOptions = baseColors.map(c => ({ type: 'color', value: c }));
-        colorOptions.push({ label: 'Annuler', value: null, class: 'cancel' });
+    if (activeChar.role === 'fugitif') {
+        mySecretPosition = targetNodeId;
+        await supabaseClient.from('game_secrets').update({ secret_position: mySecretPosition }).eq('game_id', currentGameId).eq('fugitive_id', myPlayerId);
+        activeChar.secretPosition = mySecretPosition; // Mise à jour locale
         
-        chosenColor = await showModal("Route grise !\nChoisissez la couleur de base à utiliser pour cette route :", colorOptions);
-        if (!chosenColor) return false; // Annulé
-    }
-
-    // Vérification des fonds (Couleur choisie + Jokers)
-    if ((player.cards[chosenColor] + player.cards["locomotive"]) < route.distance) {
-        showModal(`Pas assez de cartes pour le ${chosenColor} (même en utilisant vos jokers) !`);
-        return false;
-    }
-
-    let finalCost = route.distance;
-
-    // Gestion de la mécanique de Tunnel
-    if (route.isTunnel) {
-        let extraCost = 0;
-        let revealedCards = [];
-        for (let i = 0; i < 3; i++) {
-            tryReshuffle();
-            if (gameState.deck.length > 0) {
-                let c = gameState.deck.pop();
-                revealedCards.push(c);
-                gameState.discardPile.push(c); // Les cartes dévoilées vont à la défausse
-                if (c === chosenColor || c === "locomotive") extraCost++;
-            }
-        }
+        const moveNumber = (gameState.fugitiveMoves?.length || 0) + 1;
+        const isReveal = REVEAL_TURNS.includes(moveNumber);
         
-        const revealedText = revealedCards.length > 0 ? revealedCards.join(", ") : "Aucune";
-        
-        if (extraCost > 0) {
-            if ((player.cards[chosenColor] + player.cards["locomotive"]) < finalCost + extraCost) {
-                await showModal(`Tunnel ! Cartes dévoilées : ${revealedText}.\n\nSurcoût : ${extraCost} carte(s).\nVous n'avez pas de quoi payer le surcoût. Votre tour est terminé.`);
-                endTurn();
-                return false;
-            }
-            
-            const payExtra = await showModal(`Tunnel ! Cartes dévoilées : ${revealedText}.\n\nSurcoût : ${extraCost} carte(s). Voulez-vous payer ?`, [
-                { label: 'Oui, payer', value: true },
-                { label: 'Non (Fin de tour)', value: false, class: 'cancel' }
-            ]);
-            
-            if (!payExtra) {
-                endTurn(); // Le joueur refuse de payer, son tour se termine
-                return false;
-            }
+        if (isReveal) {
+            activeChar.position = mySecretPosition; // Révélation publique !
+            addHistory({ text: `est apparu à la station <b>${targetNodeId}</b> en <b>${transport.name}</b> !` }, myPlayerId);
         } else {
-            await showModal(`Tunnel !\nCartes dévoilées : ${revealedText}.\n\nAucun surcoût !`);
+            activeChar.position = null; // Reste caché
+            addHistory({ text: `s'est déplacé secrètement en <b>${transport.name}</b>.` }, myPlayerId);
         }
-        finalCost += extraCost;
+
+        if (!gameState.fugitiveMoves) gameState.fugitiveMoves = [];
+        gameState.fugitiveMoves.push({
+            turn: moveNumber,
+            transport: transportType,
+            position: isReveal ? targetNodeId : null
+        });
+    } else {
+        activeChar.position = targetNodeId;
+        addHistory({ text: `s'est déplacé à la station <b>${targetNodeId}</b> en <b>${transport.name}</b>.` }, myPlayerId);
+        
+        // On enregistre l'action pour déclencher l'animation chez les autres
+        gameState.lastAction = {
+            userId: myPlayerId,
+            charId: activeChar.id,
+            from: currentPos,
+            to: targetNodeId,
+            transport: transportType,
+            timestamp: Date.now()
+        };
     }
 
-    // Paiement effectif et validation de la route
-    payCost(player, chosenColor, finalCost);
-    player.wagons -= route.distance;
-    const scoreTable = { 1: 1, 2: 2, 3: 4, 4: 7, 6: 15, 8: 21 };
-    const earnedPoints = scoreTable[route.distance] || 0;
-    player.score += scoreTable[route.distance] || 0;
-    gameState.claimedRoutes.push({ id: routeId, owner: playerIndex });
-    
-    const vFrom = MAP.villes.find(v => v.id === route.from).name;
-    const vTo = MAP.villes.find(v => v.id === route.to).name;
-    addHistory({ type: 'route', from: vFrom, to: vTo, points: earnedPoints }, playerIndex);
-    
-    endTurn(); // Termine le tour et met à jour l'interface
-    
-    return true;
+    endTurn();
 }
 
-// --- CALCULS AVANCÉS ---
+function skipTurn() {
+    const activeChar = gameState.characters[gameState.currentPlayerIndex];
+    if (activeChar.userId !== myPlayerId) return;
 
-function getLongestRouteForPlayer(playerIndex) {
-    const playerRoutes = gameState.claimedRoutes.filter(r => r.owner === playerIndex);
-    if (playerRoutes.length === 0) return 0;
-
-    // 1. Construction du "Graphe" (Carte des connexions du joueur)
-    const graph = {};
-    playerRoutes.forEach(claim => {
-        const route = MAP.routes.find(r => r.id === claim.id);
-        if (!route) return;
-        if (!graph[route.from]) graph[route.from] = [];
-        if (!graph[route.to]) graph[route.to] = [];
+    if (activeChar.role === 'fugitif') {
+        const moveNumber = (gameState.fugitiveMoves?.length || 0) + 1;
+        const isReveal = REVEAL_TURNS.includes(moveNumber);
         
-        // Ajoute la route dans les deux sens
-        graph[route.from].push({ routeId: route.id, to: route.to, distance: route.distance });
-        graph[route.to].push({ routeId: route.id, to: route.from, distance: route.distance });
-    });
+        if (isReveal) {
+            activeChar.position = activeChar.secretPosition;
+            addHistory({ text: `est resté sur place et a été aperçu à la station <b>${activeChar.position}</b> !` }, myPlayerId);
+        } else {
+            activeChar.position = null;
+            addHistory({ text: `s'est reposé secrètement.` }, myPlayerId);
+        }
 
-    let maxLength = 0;
+        if (!gameState.fugitiveMoves) gameState.fugitiveMoves = [];
+        gameState.fugitiveMoves.push({ turn: moveNumber, transport: 'SKIP', position: isReveal ? activeChar.secretPosition : null });
+    } else {
+        addHistory({ text: `a passé son tour pour reprendre son souffle.` }, myPlayerId);
+    }
+    
+    endTurn();
+}
 
-    // 2. Exploration en profondeur (DFS) pour tester tous les chemins
-    function dfs(node, currentLength, visitedEdges) {
-        maxLength = Math.max(maxLength, currentLength);
-        if (!graph[node]) return;
+async function checkWinConditions() {
+    if (gameState.status !== 'playing') return;
 
-        for (const edge of graph[node]) {
-            if (!visitedEdges.has(edge.routeId)) { // Règle d'or : ne pas repasser sur la même route
-                visitedEdges.add(edge.routeId);
-                dfs(edge.to, currentLength + edge.distance, visitedEdges);
-                visitedEdges.delete(edge.routeId);
+    const fugitive = gameState.characters.find(c => c.role === 'fugitif');
+    if (!fugitive) return;
+
+    // Seul le client du Fugitif (ou le créateur si le fugitif est un bot) a l'autorité de valider la victoire
+    const isFugitiveClient = fugitive.userId === myPlayerId;
+    const isBotAndCreatorClient = fugitive.userId.startsWith('bot_') && gameState.creatorId === myPlayerId;
+
+    if (isFugitiveClient || isBotAndCreatorClient) {
+        let actualFugitivePos = null;
+        if (isFugitiveClient) {
+            actualFugitivePos = mySecretPosition;
+        } else {
+            const { data } = await supabaseClient.from('game_secrets').select('secret_position').eq('game_id', currentGameId).single();
+            if (data) actualFugitivePos = data.secret_position;
+        }
+
+        if (actualFugitivePos) {
+            const catchingPolice = gameState.characters.find(c => c.role === 'policier' && c.position === actualFugitivePos);
+            if (catchingPolice) {
+                gameState.status = 'finished';
+                gameState.winner = { team: 'police', reason: `Le Fugitif a été arrêté par ${catchingPolice.name} à la station ${actualFugitivePos} !` };
+                fugitive.position = actualFugitivePos; // Révélation dramatique !
+                addHistory({ text: `🚨 ARRÊTÉ par ${catchingPolice.name} ! La Police gagne !` }, fugitive.userId);
+                await saveGameState();
+                return;
             }
         }
+        
+        const fugitiveIndex = gameState.characters.findIndex(c => c.role === 'fugitif');
+        const fugitiveMovesCount = gameState.fugitiveMoves?.length || 0;
+        // Si le Fugitif a joué ses 24 tours et que la boucle revient à lui
+        if (fugitiveMovesCount >= 24 && gameState.currentPlayerIndex === fugitiveIndex) {
+            gameState.status = 'finished';
+            gameState.winner = { team: 'fugitif', reason: `Le Fugitif a survécu 24 tours et s'est échappé dans la nuit !` };
+            fugitive.position = actualFugitivePos; 
+            addHistory({ text: `🚁 ÉCHAPPÉ ! 24 tours survécus. Le Fugitif gagne !` }, fugitive.userId);
+            await saveGameState();
+        }
     }
+}
 
-    // 3. On lance l'exploration depuis chaque ville de départ possible
-    for (const startNode in graph) {
-        dfs(startNode, 0, new Set());
+async function endTurn() {
+    gameState.turnCount = (gameState.turnCount || 1) + 1; // Incrémente le tour
+    const activeUserId = gameState.characters[gameState.currentPlayerIndex].userId;
+    const user = gameState.users.find(u => u.id === activeUserId);
+    if (user) user.lastConnection = new Date().toISOString();
+
+    gameState.currentPlayerIndex = (gameState.currentPlayerIndex + 1) % gameState.characters.length; // Passe au personnage suivant
+    
+    // Régénération des Points d'Action (PA) pour le prochain joueur
+    const nextChar = gameState.characters[gameState.currentPlayerIndex];
+    nextChar.ap = Math.min(nextChar.maxAp, nextChar.ap + 2);
+    
+    await checkWinConditions(); // Le juge arbitre observe
+    
+    if (gameState.status !== 'finished') {
+        await saveGameState();
     }
-
-    return maxLength;
+    updateUI();
 }
 
 let viewBox = { x: 0, y: 0, w: 800, h: 600 };
@@ -614,31 +433,69 @@ function updateViewBox() {
     }
 }
 
+// --- SYSTÈME DE RÔLES ---
+
+async function claimRole(roleType, slotIndex = 0) {
+    const isFugitif = gameState.roles.fugitif === myPlayerId;
+    const isPolicier = gameState.roles.policiers.includes(myPlayerId);
+
+    if (roleType === 'fugitif') {
+        if (gameState.roles.fugitif) return;
+        if (isPolicier) return alert("Vous jouez déjà un Policier !");
+        gameState.roles.fugitif = myPlayerId;
+    } else if (roleType === 'policier') {
+        if (gameState.roles.policiers[slotIndex]) return;
+        if (isFugitif) return alert("Vous jouez déjà le Fugitif !");
+        gameState.roles.policiers[slotIndex] = myPlayerId;
+    }
+    await saveGameState();
+    updateUI();
+}
+
+async function unclaimRole(roleType, slotIndex = 0) {
+    let removedId = null;
+    if (roleType === 'fugitif' && (gameState.roles.fugitif === myPlayerId || (gameState.roles.fugitif && gameState.roles.fugitif.startsWith('bot_')))) {
+        removedId = gameState.roles.fugitif;
+        gameState.roles.fugitif = null;
+    } else if (roleType === 'policier' && (gameState.roles.policiers[slotIndex] === myPlayerId || (gameState.roles.policiers[slotIndex] && gameState.roles.policiers[slotIndex].startsWith('bot_')))) {
+        removedId = gameState.roles.policiers[slotIndex];
+        gameState.roles.policiers[slotIndex] = null;
+    }
+    
+    // Nettoyage complet : si on retire un bot, on l'efface aussi de la mémoire
+    if (removedId && removedId.startsWith('bot_')) {
+        gameState.users = gameState.users.filter(u => u.id !== removedId);
+    }
+    
+    await saveGameState();
+    updateUI();
+}
+
 // --- OUTILS DE DÉVELOPPEMENT (LOCAL UNIQUEMENT) ---
 
 function debugSwitchPlayer() {
-    if (gameState && gameState.players && gameState.players.length > 1) {
-        localPlayerIndex = (localPlayerIndex + 1) % gameState.players.length;
-        updateUI(); // Rafraîchit l'interface pour montrer les cartes du nouveau joueur
+    if (gameState && gameState.users && gameState.users.length > 1) {
+        const currentIndex = gameState.users.findIndex(u => u.id === myPlayerId);
+        const nextIndex = (currentIndex + 1) % gameState.users.length;
+        myPlayerId = gameState.users[nextIndex].id;
+        myPlayerName = gameState.users[nextIndex].name;
+        updateUI(); // Rafraîchit l'interface (rôles, chat, tours) pour le nouveau joueur
     }
 }
 
-async function debugAddPlayer() {
-    if (gameState.players.length >= 4) return;
+async function debugAddBotToRole(roleType, slotIndex = 0) {
     const dummyId = 'bot_' + Math.random().toString(36).substring(2, 9);
-    const newPlayer = { 
+    const newUser = { 
         id: dummyId, 
-        name: "Testeur " + gameState.players.length, 
+        name: "Bot " + dummyId.substring(4, 7), 
         avatarUrl: null,
-        wagons: 45, 
-        cards: {}, 
-        score: 0, 
-        destinations: [], 
-        color: PLAYER_COLORS[gameState.players.length], 
         lastConnection: new Date().toISOString() 
     };
-    COLORS.forEach(c => newPlayer.cards[c] = 0);
-    gameState.players.push(newPlayer);
+    gameState.users.push(newUser);
+    
+    if (roleType === 'fugitif') gameState.roles.fugitif = dummyId;
+    else if (roleType === 'policier') gameState.roles.policiers[slotIndex] = dummyId;
+
     await saveGameState();
     updateUI();
 }
@@ -680,8 +537,8 @@ async function initGame() {
     
     // Activation du mode Dev si on est sur Live Server
     if (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost') {
+        window.isDevMode = true; // Prévient ui.js qu'il peut afficher les boutons de triche
         document.getElementById('dev-switch-btn')?.classList.remove('hidden-view');
-        document.getElementById('dev-add-player-btn')?.classList.remove('hidden-view');
     }
     
     checkAuth();
@@ -704,7 +561,7 @@ async function showLobby() {
     } else {
         // --- AUTO-RECONNEXION ---
         if (!window.preventAutoReconnect) {
-            const activeGame = data.find(g => g.state.players.some(p => p.id === myPlayerId) && g.state.status !== 'finished');
+            const activeGame = data.find(g => g.state.users && g.state.users.some(u => u.id === myPlayerId) && g.state.status !== 'finished');
             if (activeGame) {
                 return joinGame(activeGame.id); // Reconnecte directement et stop le chargement du lobby
             }
@@ -712,9 +569,9 @@ async function showLobby() {
         
         // --- FILTRAGE DES PARTIES ---
         const visibleGames = data.filter(game => {
-            const amIInThisGame = game.state.players.some(p => p.id === myPlayerId);
+            const amIInThisGame = game.state.users && game.state.users.some(u => u.id === myPlayerId);
             const isWaiting = game.state.status === 'waiting';
-            const isNotFull = game.state.players.length < 4;
+            const isNotFull = game.state.users && game.state.users.length < 5;
             // On affiche si on est dedans, OU (si elle est en attente ET pas pleine)
             return (amIInThisGame && game.state.status !== 'finished') || (isWaiting && isNotFull);
         });
@@ -723,8 +580,8 @@ async function showLobby() {
             listContainer.innerHTML = "<i>Aucune partie ouverte pour le moment.</i>";
         } else {
             listContainer.innerHTML = visibleGames.map(game => {
-                const amIInThisGame = game.state.players.some(p => p.id === myPlayerId);
-                const nbPlayers = game.state.players.length;
+                const amIInThisGame = game.state.users.some(u => u.id === myPlayerId);
+                const nbPlayers = game.state.users.length;
                 const isPlaying = game.state.status === 'playing';
                 
                 let btnLabel = amIInThisGame ? 'Reconnecter' : (isPlaying ? 'En cours' : 'Rejoindre');
@@ -733,18 +590,15 @@ async function showLobby() {
                 const dateStr = new Date(game.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
                 
                 // Calcul du "Tour" (Manche globale)
-                const currentRound = Math.floor(((game.state.turnCount || 1) - 1) / nbPlayers) + 1;
-                const isMyTurn = isPlaying && game.state.players[game.state.currentPlayer]?.id === myPlayerId;
+                const nbChars = game.state.characters ? game.state.characters.length : 5;
+                const currentRound = Math.floor(((game.state.turnCount || 1) - 1) / (nbChars || 1)) + 1;
+                const isMyTurn = isPlaying && game.state.characters[game.state.currentPlayerIndex]?.userId === myPlayerId;
 
                 // Création des bulles d'initiales pour les joueurs
-                const playersHtml = game.state.players.map((p, idx) => {
-                    const isCurrentTurn = isPlaying && (idx === game.state.currentPlayer);
-                    const isMe = (p.id === myPlayerId);
-                    const borderClass = isCurrentTurn ? 'avatar-active' : '';
-                    const avatarContent = p.avatarUrl 
-                        ? `<img src="${p.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">`
-                        : p.name.substring(0, 2).toUpperCase();
-                    return `<div class="player-avatar ${borderClass}" style="background-color: ${p.color};" title="${p.name}${isMe ? ' (Vous)' : ''}">${avatarContent}</div>`;
+                const playersHtml = game.state.users.map((u) => {
+                    const isMe = (u.id === myPlayerId);
+                    const avatarContent = u.avatarUrl ? `<img src="${u.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">` : u.name.substring(0, 2).toUpperCase();
+                    return `<div class="player-avatar" style="background-color: #34495e;" title="${u.name}${isMe ? ' (Vous)' : ''}">${avatarContent}</div>`;
                 }).join('');
 
                 return `
@@ -772,14 +626,13 @@ async function createNewGame() {
     const gameName = gameNameInput || `Partie de ${myPlayerName}`;
 
     gameState = {
-        name: gameName, status: 'waiting', currentPlayer: 0, turnCount: 1, cardsDrawnThisTurn: 0, history: [], chat: [],
-        players: [], claimedRoutes: [], deck: [], destinationDeck: [], discardPile: [], faceUpCards: []
+        name: gameName, status: 'waiting', creatorId: myPlayerId, options: {},
+        turnCount: 1, history: [], chat: [], fugitiveMoves: [],
+        lastAction: null,
+        users: [{ id: myPlayerId, name: myPlayerName, avatarUrl: myAvatarUrl, lastConnection: new Date().toISOString() }],
+        roles: { fugitif: null, policiers: [null, null, null, null] },
+        characters: [], currentPlayerIndex: 0
     };
-
-    // Ajoute le créateur à la liste des joueurs
-    const creator = { id: myPlayerId, name: myPlayerName, avatarUrl: myAvatarUrl, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[0], lastConnection: new Date().toISOString() };
-    COLORS.forEach(c => creator.cards[c] = 0);
-    gameState.players.push(creator);
 
     const { data, error } = await supabaseClient
         .from('games')
@@ -789,8 +642,7 @@ async function createNewGame() {
     if (error) {
         alert("Erreur de connexion à la base de données !");
     } else {
-        localPlayerIndex = 0; // Le créateur est le Joueur 1
-        
+
         currentGameId = data[0].id;
         
         subscribeToGame(currentGameId);
@@ -810,379 +662,82 @@ async function joinGame(id) {
     gameState = data.state;
     currentGameId = id;
 
-    // Est-ce que je suis déjà dans cette partie ?
-    localPlayerIndex = gameState.players.findIndex(p => p.id === myPlayerId);
+    const userExists = gameState.users.find(u => u.id === myPlayerId);
 
-    // Si je suis un petit nouveau
-    if (localPlayerIndex === -1) {
+    if (!userExists) {
         if (gameState.status === 'playing') return alert("La partie a déjà commencé, vous ne pouvez pas la rejoindre !");
-        if (gameState.players.length >= 4) return alert("La partie est complète (4 joueurs max) !");
+        if (gameState.users.length >= 5) return alert("Le salon est complet (5 joueurs max) !");
         
-        const newPlayer = { id: myPlayerId, name: myPlayerName, avatarUrl: myAvatarUrl, wagons: 45, cards: {}, score: 0, destinations: [], color: PLAYER_COLORS[gameState.players.length], lastConnection: new Date().toISOString() };
-        COLORS.forEach(c => newPlayer.cards[c] = 0);
-        
-        gameState.players.push(newPlayer);
-        localPlayerIndex = gameState.players.length - 1;
+        gameState.users.push({ id: myPlayerId, name: myPlayerName, avatarUrl: myAvatarUrl, lastConnection: new Date().toISOString() });
         
         await supabaseClient.from('games').update({ state: gameState }).eq('id', id);
     }
 
     subscribeToGame(currentGameId);
+    
+    const myFugitive = gameState.characters?.find(c => c.userId === myPlayerId && c.role === 'fugitif');
+    if (myFugitive && gameState.status === 'playing') {
+        await ensureFugitiveSecret();
+        myFugitive.secretPosition = mySecretPosition;
+    }
+
     updateUI();
 }
 
 async function startActiveGame() {
-    if (gameState.players[0].id !== myPlayerId) return; // Sécurité : Seul le créateur peut lancer
+    if (gameState.creatorId !== myPlayerId) return; 
     
-    initDeck();
-    refillRiver();
-    initDestinations();
+    if (!gameState.roles.fugitif) return alert("Quelqu'un doit incarner le Fugitif !");
+    if (gameState.roles.policiers.filter(p => p !== null).length === 0) return alert("Il faut au moins 1 Policier !");
     
-    // Distribution initiale : 4 wagons et 1 mission
-    gameState.players.forEach(p => {
-        for (let i = 0; i < 4; i++) p.cards[gameState.deck.pop()]++;
-        if(gameState.destinationDeck.length > 0) p.destinations.push(gameState.destinationDeck.pop());
+    gameState.characters = [];
+    
+    // Mélanger les positions de départ disponibles
+    const positions = [...STARTING_POSITIONS];
+    for (let i = positions.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [positions[i], positions[j]] = [positions[j], positions[i]];
+    }
+
+    // 1. Création du Fugitif
+    const fugUser = gameState.users.find(u => u.id === gameState.roles.fugitif);
+    gameState.characters.push({
+        id: 'fugitif', userId: fugUser.id, name: fugUser.name + ' (Fugitif)',
+        role: 'fugitif', color: '#2c3e50', position: null, // POSITION PUBLIQUE CACHÉE !
+        ap: 8, maxAp: 12 // Points d'Action du Fugitif
     });
 
-    addHistory({ type: 'start' }, 0); // Log du début
+    // 2. Création des Policiers
+    let pIndex = 0;
+    gameState.roles.policiers.forEach((userId, i) => {
+        if (userId) {
+            const polUser = gameState.users.find(u => u.id === userId);
+            const multiRole = gameState.roles.policiers.filter(u => u === userId).length > 1;
+            gameState.characters.push({
+                id: 'policier_' + (i+1), userId: polUser.id,
+                name: polUser.name + (multiRole ? ` (Pol. ${pIndex+1})` : ''),
+                role: 'policier', color: POLICE_COLORS[pIndex], position: positions.pop(),
+                ap: 6, maxAp: 10 // Points d'Action des Policiers
+            });
+            pIndex++;
+        }
+    });
+
+    gameState.availableStarts = positions; // On laisse les positions restantes pour que le Fugitif puisse piocher secrètement
+
+    window.hasShownEndModal = false;
+    addHistory({ text: "La traque commence dans les rues de Londres !" }, myPlayerId); 
     gameState.status = 'playing'; // On lance la partie !
+    gameState.currentPlayerIndex = 0;
     await saveGameState();
+    
+    const myFugitive = gameState.characters?.find(c => c.userId === myPlayerId && c.role === 'fugitif');
+    if (myFugitive) {
+        await ensureFugitiveSecret();
+        myFugitive.secretPosition = mySecretPosition;
+    }
+
     updateUI();
 }
 
-function renderWaitingRoom() {
-    document.getElementById('lobby-container').classList.add('hidden-view');
-    document.getElementById('game-container').classList.add('hidden-view');
-    document.getElementById('waiting-room-container').classList.remove('hidden-view');
-    
-    document.getElementById('waiting-game-id').innerText = gameState.name || `Partie #${currentGameId}`;
-    
-    const listEl = document.getElementById('waiting-players-list');
-    listEl.innerHTML = gameState.players.map((p, i) => {
-        const isOnline = onlinePlayers[p.id];
-        const onlineIcon = isOnline ? "🟢" : "🔴";
-        const avatarImg = p.avatarUrl ? `<img src="${p.avatarUrl}" style="width:24px; height:24px; border-radius:50%; vertical-align:middle; margin-right:8px; border:1px solid ${p.color}; object-fit:cover;">` : '';
-        const lastSeenText = (!isOnline && p.lastConnection) ? ` <span style="font-size:12px; color:#ccc; font-weight:normal;">(Vu: ${formatLastSeen(p.lastConnection)})</span>` : '';
-        return `
-            <div style="padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.2); color: ${p.color}; font-weight: bold;">
-                ${onlineIcon} ${avatarImg}${i === 0 ? '👑 ' : '🧑‍🚀 '}${p.name} ${p.id === myPlayerId ? ' <i>(VOUS)</i>' : ''}${lastSeenText}
-            </div>
-        `;
-    }).join('');
-    
-    const isCreator = (gameState.players[0].id === myPlayerId);
-    const startBtn = document.getElementById('start-game-btn');
-    const waitMsg = document.getElementById('waiting-msg');
-    
-    if (isCreator) {
-        startBtn.classList.remove('hidden-view');
-        waitMsg.classList.add('hidden-view');
-        startBtn.disabled = gameState.players.length < 2;
-        startBtn.innerText = gameState.players.length < 2 ? "En attente de joueurs... (1/4)" : "Démarrer la partie !";
-        startBtn.style.background = gameState.players.length < 2 ? "gray" : "#e67e22";
-    } else {
-        startBtn.classList.add('hidden-view');
-        waitMsg.classList.remove('hidden-view');
-    }
-}
-
-function renderMap(svg) {
-    svg.innerHTML = '';
-    const myPlayer = gameState.players[localPlayerIndex]; // On utilise notre propre joueur
-    const activePlayer = gameState.players[gameState.currentPlayer];
-
-    MAP.routes.forEach(route => {
-        // PROACTIF : Désactiver le surlignage des routes si le joueur a déjà pioché une carte
-        let isPlayable = localPlayerIndex === gameState.currentPlayer && !gameState.claimedRoutes.some(r => r.id === route.id) && activePlayer.wagons >= route.distance && gameState.cardsDrawnThisTurn === 0;
-        
-        if (isPlayable) {
-            if (route.color === "gris") {
-                const baseColors = COLORS.filter(c => c !== "locomotive");
-                // Est-ce qu'au moins UNE couleur (+ jokers) permet de payer ?
-                isPlayable = baseColors.some(c => (myPlayer.cards[c] + myPlayer.cards["locomotive"]) >= route.distance);
-            } else {
-                isPlayable = (myPlayer.cards[route.color] + myPlayer.cards["locomotive"]) >= route.distance;
-            }
-        }
-
-        drawProfessionalRoute(svg, route, isPlayable);
-    });
-
-    // Dessiner MES propres lignes de mission secrètes (et jamais celles de l'adversaire)
-    myPlayer.destinations.forEach(d => {
-        const vFrom = MAP.villes.find(v => v.id === d.from);
-        const vTo = MAP.villes.find(v => v.id === d.to);
-        if (vFrom && vTo) {
-            const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-            line.setAttribute("x1", vFrom.x);
-            line.setAttribute("y1", vFrom.y);
-            line.setAttribute("x2", vTo.x);
-            line.setAttribute("y2", vTo.y);
-            line.classList.add("mission-line");
-            svg.appendChild(line);
-        }
-    });
-
-    MAP.villes.forEach(ville => drawCity(svg, ville));
-}
-
-function updateUI() {
-    // Si la partie n'a pas encore commencé, on reste dans la salle d'attente
-    if (gameState.status === 'waiting') {
-        renderWaitingRoom();
-        return;
-    }
-
-    document.getElementById('waiting-room-container').classList.add('hidden-view');
-    document.getElementById('lobby-container').classList.add('hidden-view');
-    document.getElementById('game-container').classList.remove('hidden-view');
-
-    const myPlayer = gameState.players[localPlayerIndex]; // Affichage spécifique à moi
-    const activePlayer = gameState.players[gameState.currentPlayer];
-    const isMyTurn = (localPlayerIndex === gameState.currentPlayer);
-
-    // Mise à jour de la bannière de tour et grisage de l'interface
-    const turnBanner = document.getElementById('turn-banner');
-    if (turnBanner) {
-        if (isMyTurn) {
-            turnBanner.innerText = "🟢 C'est à vous de jouer !";
-            turnBanner.className = "turn-active";
-            document.querySelector('.draw-area').classList.remove('disabled-turn');
-        } else {
-            turnBanner.innerText = "🔴 En attente de " + activePlayer.name + "...";
-            turnBanner.className = "turn-waiting";
-            document.querySelector('.draw-area').classList.add('disabled-turn');
-        }
-    }
-    
-    // Mise à jour des cartes d'informations des joueurs en haut
-    const playersContainer = document.getElementById('players-info-container');
-    if (playersContainer) {
-        playersContainer.innerHTML = '';
-        gameState.players.forEach((p, index) => {
-            const isActive = index === gameState.currentPlayer;
-            // Calcul du nombre total de cartes en main
-            const totalCards = Object.values(p.cards).reduce((sum, val) => sum + val, 0);
-            
-            const cardDiv = document.createElement('div');
-            cardDiv.className = `player-info-card ${isActive ? 'active' : ''}`;
-            
-            // Ajout du liseré aux couleurs du joueur
-            cardDiv.style.borderTop = `4px solid ${p.color}`;
-            
-            if (isActive) {
-                cardDiv.style.borderColor = p.color;
-                cardDiv.style.boxShadow = `0 0 15px ${p.color}80`; // Halo coloré semi-transparent
-            }
-
-            let nameText = p.name + (index === localPlayerIndex ? " (VOUS)" : "");
-            if (isActive && gameState.cardsDrawnThisTurn > 0) {
-                nameText += " (1 carte piochée)";
-            }
-
-            const isOnline = onlinePlayers[p.id];
-            const onlineIcon = isOnline ? "🟢" : "🔴";
-            const avatarImg = p.avatarUrl ? `<img src="${p.avatarUrl}" style="width:16px; height:16px; border-radius:50%; vertical-align:middle; margin-right:4px; object-fit:cover;">` : '';
-            const lastSeenText = (!isOnline && p.lastConnection) ? `<div style="font-size:9px; color:#bdc3c7; margin-top:-5px; margin-bottom:4px; font-weight:normal; line-height: 1;">Vu: ${formatLastSeen(p.lastConnection)}</div>` : '';
-
-            cardDiv.innerHTML = `
-                <div class="player-name" ${isActive ? `style="color: ${p.color};"` : ''}>${onlineIcon} ${avatarImg}${nameText}</div>
-                ${lastSeenText}
-                <div class="player-stats">
-                    <div class="stat-item" title="Score"><span class="stat-icon">⭐</span><span class="stat-value">${p.score}</span></div>
-                    <div class="stat-item" title="Wagons restants"><span class="stat-icon">🚂</span><span class="stat-value">${p.wagons}</span></div>
-                    <div class="stat-item" title="Cartes en main"><span class="stat-icon">🃏</span><span class="stat-value">${totalCards}</span></div>
-                    <div class="stat-item" title="Missions secrètes"><span class="stat-icon">🎯</span><span class="stat-value">${p.destinations.length}</span></div>
-                </div>
-            `;
-            playersContainer.appendChild(cardDiv);
-        });
-    }
-
-    // Mise à jour de l'affichage des missions en haut
-    const destContainer = document.getElementById('current-destinations');
-    if (destContainer) {
-        destContainer.innerHTML = '';
-        if (myPlayer.destinations.length > 0) {
-            myPlayer.destinations.forEach(d => {
-                const vFrom = MAP.villes.find(v => v.id === d.from).name;
-                const vTo = MAP.villes.find(v => v.id === d.to).name;
-                const span = document.createElement('span');
-                span.className = 'mission-item';
-                span.innerText = `${vFrom} - ${vTo}`;
-                destContainer.appendChild(span);
-            });
-        } else {
-            destContainer.innerText = "Aucune";
-        }
-    }
-
-    // RE-DESSINER LA CARTE pour mettre à jour les halos
-    const svg = document.getElementById('map-svg');
-    renderMap(svg);
-
-    // Mise à jour de la main (Les cartes)
-    const handContainer = document.getElementById('player-hand');
-    handContainer.innerHTML = '';
-
-    // On crée un visuel pour chaque carte possédée par MOI
-    Object.keys(myPlayer.cards).forEach(color => {
-        if (myPlayer.cards[color] > 0) {
-            for (let i = 0; i < myPlayer.cards[color]; i++) {
-                const cardDiv = document.createElement('div');
-                cardDiv.className = `card-visual`;
-                if (color === "locomotive") {
-                    cardDiv.classList.add("loco-card");
-                    cardDiv.innerText = "J";
-                } else {
-                    cardDiv.style.backgroundColor = COLOR_MAP[color] || color;
-                    cardDiv.innerText = INITIALS_MAP[color] || color.charAt(0).toUpperCase();
-                }
-                
-                // Petit effet d'éventail mathématique
-                const rotation = (i * 2) - 5; 
-                cardDiv.style.transform = `rotate(${rotation}deg)`;
-                
-                handContainer.appendChild(cardDiv);
-            }
-        }
-    });
-
-    // Mise à jour de la rivière (Cartes visibles)
-    const riverContainer = document.getElementById('river');
-    if (riverContainer) {
-        riverContainer.innerHTML = '';
-        gameState.faceUpCards.forEach((color, index) => {
-            const cardDiv = document.createElement('div');
-            cardDiv.className = `card-visual river-card`;
-            if (color === "locomotive") {
-                cardDiv.classList.add("loco-card");
-                cardDiv.innerText = "J";
-                
-                // PROACTIF : On grise le Joker de la rivière si 1 carte a déjà été piochée
-                if (gameState.cardsDrawnThisTurn > 0) {
-                    cardDiv.classList.add("disabled-card");
-                } else {
-                    cardDiv.onclick = (e) => drawFromRiver(index, e); // On passe l'événement 'e'
-                }
-            } else {
-                cardDiv.style.backgroundColor = COLOR_MAP[color] || color;
-                cardDiv.innerText = INITIALS_MAP[color] || color.charAt(0).toUpperCase();
-                cardDiv.onclick = (e) => drawFromRiver(index, e); // On passe l'événement 'e'
-            }
-            riverContainer.appendChild(cardDiv);
-        });
-    }
-
-    // Mise à jour du compteur de la pioche
-    const deckElement = document.getElementById('deck');
-    if (deckElement) {
-        deckElement.innerText = `Pioche\n(${gameState.deck.length})`;
-    }
-
-    // Mise à jour du compteur de la pioche destination
-    const destDeckElement = document.getElementById('dest-deck');
-    if (destDeckElement) {
-        destDeckElement.innerText = `Missions\n(${gameState.destinationDeck.length})`;
-    }
-
-    // Mise à jour de la défausse
-    const discardElement = document.getElementById('discard');
-    if (discardElement) {
-        discardElement.innerText = `Défausse\n(${gameState.discardPile.length})`;
-    }
-    
-    updateHistoryUI();
-}
-
-// (Garder ici tes fonctions drawProfessionalRoute et drawCity que tu as déjà)
-// ... [Tes fonctions drawProfessionalRoute et drawCity] ...
-
-function drawCity(svg, ville) {
-    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-    circle.setAttribute("cx", ville.x);
-    circle.setAttribute("cy", ville.y);
-    circle.setAttribute("r", "14");
-    circle.setAttribute("fill", "white");
-    circle.setAttribute("stroke", "#2c3e50");
-    circle.setAttribute("stroke-width", "3");
-    
-    const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    text.setAttribute("x", ville.x);
-    text.setAttribute("y", ville.y + 30);
-    text.setAttribute("text-anchor", "middle");
-    text.setAttribute("style", "font-size: 12px; font-weight: bold; fill: #2c3e50;");
-    text.textContent = ville.name;
-
-    g.appendChild(circle);
-    g.appendChild(text);
-    svg.appendChild(g);
-}
-
-// Ajoute "isPlayable" ici dans les arguments entre parenthèses
-function drawProfessionalRoute(svg, route, isPlayable) {
-    const vFrom = MAP.villes.find(v => v.id === route.from);
-    const vTo = MAP.villes.find(v => v.id === route.to);
-    const dx = vTo.x - vFrom.x;
-    const dy = vTo.y - vFrom.y;
-    const distanceTotale = Math.sqrt(dx * dx + dy * dy);
-    const angle = Math.atan2(dy, dx) * (180 / Math.PI);
-    const nbWagons = route.distance;
-    const padding = 4;
-    const wagonWidth = (distanceTotale / nbWagons) - padding;
-    const wagonHeight = 12;
-
-    const routeGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    routeGroup.setAttribute("id", `route-${route.id}`);
-    
-    // Maintenant "isPlayable" est bien défini !
-    if (isPlayable) {
-        routeGroup.classList.add("highlight-route", "playable-pulse");
-    }
-
-    const claimData = gameState.claimedRoutes.find(r => r.id === route.id);
-    const isClaimed = !!claimData;
-
-    for (let i = 0; i < nbWagons; i++) {
-        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        const offset = (i * (wagonWidth + padding)) + (padding / 2);
-        rect.setAttribute("x", vFrom.x + (dx * offset / distanceTotale));
-        rect.setAttribute("y", vFrom.y + (dy * offset / distanceTotale) - (wagonHeight / 2));
-        rect.setAttribute("width", wagonWidth);
-        rect.setAttribute("height", wagonHeight);
-        rect.setAttribute("rx", "2");
-        rect.setAttribute("transform", `rotate(${angle}, ${vFrom.x + (dx * offset / distanceTotale)}, ${vFrom.y + (dy * offset / distanceTotale)})`);
-        
-        rect.classList.add("wagon-unit");
-        
-        if (isClaimed) {
-            const ownerColor = gameState.players[claimData.owner].color;
-            rect.setAttribute("fill", "#1a252f"); // Corps du train gris très sombre
-            rect.setAttribute("stroke", ownerColor); // Liseré Néon du joueur
-            rect.setAttribute("stroke-width", "3");
-            rect.style.opacity = "1";
-            rect.style.filter = `drop-shadow(0px 2px 5px ${ownerColor})`; // Aura autour du wagon
-        } else {
-            rect.setAttribute("fill", route.color === "gris" ? "#bdc3c7" : (COLOR_MAP[route.color] || route.color));
-            rect.style.opacity = "0.25";
-        }
-        
-        // Style spécial pour les Tunnels (conserve les pointillés)
-        if (route.isTunnel) {
-            rect.classList.add("tunnel-wagon");
-            if (!isClaimed) rect.setAttribute("stroke", "#2c3e50"); // Bordure sombre classique
-        }
-
-        routeGroup.appendChild(rect);
-    }
-
-    routeGroup.onclick = async () => {
-        if (window.isDraggingMap) return;
-        if (await claimRoute(gameState.currentPlayer, route.id)) {
-            updateUI();
-        }
-    };
-    svg.appendChild(routeGroup);
-}
 window.onload = initGame;

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'aventuriers-v4';
+const CACHE_NAME = 'aventuriers-v25';
 const ASSETS_TO_CACHE = [
     './',
     './index.html',

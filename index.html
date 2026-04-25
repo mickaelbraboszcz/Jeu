@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="theme-color" content="#2c3e50">
     <link rel="manifest" href="manifest.json">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=25">
 </head>
 <body>
     <div id="lobby-container">
@@ -16,7 +16,7 @@
             <button class="lobby-btn" style="background: #db4437;" onclick="loginWithGoogle()">S'identifier avec Google</button>
         </div>
 
-        <!-- Actions du salon (cachées si non connecté) -->
+        <!-- Actions du salon (cachées si non connecté) xxx-->
         <div id="lobby-actions" class="hidden-view" style="width: 100%; display: flex; flex-direction: column; align-items: center;">
             <p style="font-size: 18px;">Bienvenue, <b id="user-name-display" style="color: #2ecc71;"></b> ! <a href="#" onclick="logout()" style="color: #e74c3c; font-size: 14px; margin-left: 10px;">(Déconnexion)</a></p>
             <input type="text" id="game-name-input" class="lobby-input" placeholder="Nom de la partie (Optionnel)" maxlength="30" style="margin-top: 15px;" />
@@ -27,7 +27,7 @@
         </div>
     </div>
 
-    <!-- NOUVEAU : Salon d'attente avant le début du jeu -->
+    <!-- NOUVEAU : Salon d'attente avant le début du jeu xxx-->
     <div id="waiting-room-container" class="hidden-view" style="display:flex; flex-direction:column; align-items:center; color:white; margin-top: 10vh; width:100%;">
         <div style="width: 100%; display: flex; justify-content: flex-end; padding-right: 20px; box-sizing: border-box; margin-top: -10px;">
             <button onclick="toggleChatMenu()" style="padding: 8px 15px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5); border-radius: 4px; cursor: pointer; font-weight: bold; position: relative;">
@@ -37,10 +37,10 @@
         </div>
         <h2 style="text-shadow: 2px 2px 4px black; font-size:28px;">⏳ Salle d'attente</h2>
         <p style="font-size:18px;"><span id="waiting-game-id" style="font-weight:bold; color:#e67e22;"></span></p>
+        <div id="game-options-container"></div>
         <div id="waiting-players-list" style="background: rgba(0,0,0,0.5); padding: 20px; border-radius: 8px; width: 90%; max-width: 400px; margin: 20px 0; font-size:18px; line-height:1.8;"></div>
         <button id="start-game-btn" class="lobby-btn hidden-view" onclick="startActiveGame()"></button>
         <p id="waiting-msg" style="color: #f39c12; font-style: italic; font-size:18px; text-align:center;">En attente du créateur de la partie...</p>
-        <button id="dev-add-player-btn" onclick="debugAddPlayer()" class="hidden-view" style="margin-top: 10px; padding: 5px 10px; background: #8e44ad; color: white; border: none; border-radius: 8px; cursor: pointer;">🛠 Dev : Ajouter un bot</button>
         <button onclick="leaveGameToLobby()" style="margin-top: 20px; padding: 10px 20px; background: #7f8c8d; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">⬅ Retour à l'accueil</button>
     </div>
 
@@ -64,20 +64,17 @@
                 </div>
             </div>
             <div id="players-info-container"></div>
-            <div id="missions-display">Missions secrètes du tour : <span id="current-destinations"></span></div>
         </div>
 
         <svg id="map-svg" viewBox="0 0 800 600"></svg>
 
+        <!-- Journal de bord du Fugitif -->
+        <div id="travel-log-sidebar" class="hidden-view">
+            <div class="travel-header">Traque</div>
+            <div id="travel-log-content"></div>
+        </div>
+
         <div id="ui-bottom">
-            <div class="draw-area">
-                <div id="deck" class="card-visual deck-card" onclick="drawFromDeck()">Pioche</div>
-                <div id="dest-deck" class="card-visual dest-card" onclick="drawDestinationsAction()">Missions</div>
-                <div id="discard" class="card-visual discard-card">Défausse</div>
-                <div id="river" class="river-container"></div>
-            </div>
-            <div id="player-hand" class="hand-container">
-            </div>
         </div>
     </div>
   
@@ -116,19 +113,21 @@
 
     <!-- Importation de Supabase via CDN -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="data.js"></script>
-    <script src="ui.js"></script>
-    <script src="game.js"></script>
+    <script src="data.js?v=25"></script>
+    <script src="ui.js?v=25"></script>
+    <script src="game.js?v=25"></script>
 
-    <!-- Enregistrement du Service Worker pour la PWA -->
+    <!-- NETTOYAGE COMPLET DU CACHE POUR LE DÉVELOPPEMENT -->
     <script>
         if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('./sw.js')
-                    .then(reg => console.log('ServiceWorker activé !'))
-                    .catch(err => console.error('Erreur ServiceWorker :', err));
+            navigator.serviceWorker.getRegistrations().then(function(registrations) {
+                for(let registration of registrations) {
+                    registration.unregister(); // Désinstalle le bouclier hors-ligne
+                }
             });
         }
+        // Supprime toutes les mémoires en cache existantes
+        caches.keys().then(function(names) { for (let name of names) caches.delete(name); });
     </script>
 </body>
 </html>
