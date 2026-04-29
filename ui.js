@@ -1,4 +1,24 @@
 // --- UTILITAIRES & MODALES ---
+function getLogDateString(dateString) {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+
+    const timeStr = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+
+    if (date.toDateString() === today.toDateString()) {
+        return timeStr;
+    } else if (date.toDateString() === yesterday.toDateString()) {
+        return `${timeStr}<br>Hier`;
+    } else {
+        const day = date.getDate().toString().padStart(2, '0');
+        const month = (date.getMonth() + 1).toString().padStart(2, '0');
+        return `${timeStr}<br>${day}/${month}`;
+    }
+}
+
 function formatLastSeen(dateString) {
     if (!dateString) return "Inconnue";
     const date = new Date(dateString);
@@ -136,9 +156,31 @@ function toggleHistoryMenu() {
     }
 }
 
-function showGameOptions() {
+async function showGameOptions() {
     if (gameState.creatorId !== myPlayerId) return;
-    showModal("🛠 Options de la partie\n\n(Menu en cours de préparation...)", []);
+    const currentRisky = gameState.options?.riskyMove !== false;
+    
+    const options = [
+        { label: (currentRisky ? "✅" : "❌") + " Adrénaline (Risque = Récompense)", value: 'toggle_risky', bgColor: currentRisky ? '#2ecc71' : '#e74c3c' },
+        { label: "Fermer", value: 'close', class: 'cancel' }
+    ];
+    
+    const choice = await showModal("🛠 Options de la partie\n\nActivez les règles spéciales ci-dessous :", options);
+    if (choice === 'toggle_risky') {
+        if (!gameState.options) gameState.options = {};
+        gameState.options.riskyMove = !currentRisky;
+        await saveGameState();
+        updateUI();
+        showGameOptions(); // Rouvre le menu instantanément pour voir le changement
+    }
+}
+
+window.historyActiveFilter = null;
+
+function toggleHistoryFilter(userId) {
+    if (window.historyActiveFilter === userId) window.historyActiveFilter = null; // Désactive si on reclique
+    else window.historyActiveFilter = userId; // Active le filtre
+    updateHistoryUI(); // Rafraîchit l'affichage
 }
 
 function updateHistoryUI() {
@@ -150,28 +192,108 @@ function updateHistoryUI() {
     const storageKey = 'lastViewedHistory_' + currentGameId + '_' + myPlayerId;
     const lastViewed = localStorage.getItem(storageKey) || "2000-01-01T00:00:00.000Z";
 
+    // Rendu de la barre de filtres
+    const filterContainer = document.getElementById('history-filters');
+    if (filterContainer && gameState.characters) {
+        let filterHtml = `<div class="history-filter-btn ${!window.historyActiveFilter ? 'active' : ''}" onclick="toggleHistoryFilter(null)">Tout</div>`;
+        gameState.characters.forEach(c => {
+            const u = gameState.users.find(usr => usr.id === c.userId);
+            if (!u) return;
+            const isActive = window.historyActiveFilter === c.userId;
+            const avatarContent = u.avatarUrl ? `<img src="${u.avatarUrl}">` : u.name.substring(0, 2).toUpperCase();
+            filterHtml += `
+                <div class="history-filter-btn ${isActive ? 'active' : ''}" style="border-color: ${c.color};" onclick="toggleHistoryFilter('${c.userId}')" title="${u.name}">
+                    <div class="player-avatar" style="width:18px; height:18px; min-width:18px; font-size:8px; border:none; cursor:pointer;">${avatarContent}</div>
+                </div>`;
+        });
+        filterContainer.innerHTML = filterHtml;
+    }
 
+    let lastRound = null;
     let unreadCount = 0;
+    
     content.innerHTML = gameState.history.slice().reverse().map(item => {
         const user = gameState.users.find(u => u.id === item.userId);
-        if (!user) return ''; 
+        if (!user && item.type !== 'system') return ''; 
+        
+        // Application du filtre : on masque si l'action n'est pas de l'utilisateur filtré (sauf messages système)
+        if (window.historyActiveFilter && item.userId !== window.historyActiveFilter && item.type !== 'system') {
+            return '';
+        }
         
         const isMe = item.userId === myPlayerId;
         const isNew = !isMe && new Date(item.timestamp) > new Date(lastViewed);
         if (isNew) unreadCount++;
-        const timeStr = new Date(item.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-         const avatarContent = user.avatarUrl ? `<img src="${user.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">` : user.name.substring(0, 2).toUpperCase();
-        const avatarHtml = `<div class="player-avatar" style="width: 22px; height: 22px; min-width: 22px; font-size: 9px; background-color: #34495e; flex-shrink: 0;" title="${user.name}">${avatarContent}</div>`;
-        let actionHtml = '';
-        if (item.text) actionHtml = item.text; // On ne garde que le format générique
+        
+        const timeStr = getLogDateString(item.timestamp);
+        const badgeHtml = isNew ? `<div class="history-badge-new">Nouv.</div>` : '';
 
-        const badgeHtml = isNew ? `<div style="position: absolute; top: -6px; right: -6px; font-size: 9px; background: #2ecc71; color: white; padding: 2px 4px; border-radius: 4px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.5); z-index: 10;">Nouv.</div>` : '';
+        let roundHtml = '';
+        if (item.round !== undefined && item.round !== lastRound) {
+            // [3, 8, 13, 18, 24] sont les tours de révélation natifs
+            const isRevealRound = [3, 8, 13, 18, 24].includes(item.round);
+            const revealBadge = isRevealRound ? `<span class="history-round-reveal">👁️ Apparition Fugitif</span>` : '';
+            roundHtml = `<div class="history-round-divider"><span>Tour ${item.round}</span>${revealBadge}</div>`;
+            lastRound = item.round;
+        }
+
+        let actionHtml = '';
+        if (item.type === 'adrenaline') {
+            if (isMe || (gameState.lastRevealTurn && item.turn <= gameState.lastRevealTurn)) {
+                actionHtml = `<div class="history-alert fugitive-win" style="background: rgba(230, 126, 34, 0.2); border-color: #e67e22; color: #e67e22;">${item.text}</div>`;
+            } else {
+                return ''; // Invisible pour la police tant que ce n'est pas révélé
+            }
+        } else if (item.type === 'move') {
+            const imgMap = { 'BUS': 'Icone_bus.png', 'TAXI': 'Icone_taxi.png', 'UNDERGROUND': 'Icone_métro.png', 'BLACK': 'Icone_secret.png' };
+            const imgSrc = imgMap[item.transport] || 'Icone_secret.png';
+            let targetDisplay = item.target;
+            if (item.target === '?') {
+                targetDisplay = (isMe || (gameState.lastRevealTurn && item.turn <= gameState.lastRevealTurn)) ? (item.secretTarget || '❓') : '❓';
+            }
+            const revealIcon = item.isReveal ? '<span title="Apparition !">👁️</span>' : '';
+            actionHtml = `<div class="history-schematic"><img src="Images/${imgSrc}" class="history-transport-icon" /><span class="history-arrow">➔</span><span class="history-node ${targetDisplay === '❓' ? 'node-secret' : ''}">${targetDisplay}</span>${revealIcon}</div>`;
+        } else if (item.type === 'skip') {
+            let targetDisplay = item.target && item.target !== '?' ? item.target : '';
+            if (item.target === '?') {
+                targetDisplay = (isMe || (gameState.lastRevealTurn && item.turn <= gameState.lastRevealTurn)) ? (item.secretTarget || '❓') : '❓';
+            }
+            const revealIcon = item.isReveal ? '<span title="Apparition !">👁️</span>' : '';
+            actionHtml = `<div class="history-schematic"><span class="history-skip-icon">💤</span><span class="history-text">Repos</span>${targetDisplay ? `<span class="history-node ${targetDisplay === '❓' ? 'node-secret' : ''}">${targetDisplay}</span>` : ''}${revealIcon}</div>`;
+        } else if (item.type === 'spawn') {
+            let targetDisplay = item.target;
+            if (item.isFugitiveSpawn) {
+                targetDisplay = '❓';
+                if (gameState.fugitiveMoves && gameState.fugitiveMoves.length > 0) {
+                    const startPos = gameState.fugitiveMoves[0].fromPosition;
+                    targetDisplay = (isMe || (gameState.lastRevealTurn && gameState.lastRevealTurn > 0)) ? startPos : '❓';
+                }
+            }
+            actionHtml = `<div class="history-schematic"><span title="Déploiement" style="font-size:16px;">📍</span><span class="history-text">Départ</span><span class="history-arrow">➔</span><span class="history-node ${(targetDisplay === '❓') ? 'node-secret' : ''}">${targetDisplay}</span></div>`;
+        } else if (item.type === 'catch') {
+            actionHtml = `<div class="history-alert police-win">🚨 <b>Fugitif arrêté !</b></div>`;
+        } else if (item.type === 'escape') {
+            actionHtml = `<div class="history-alert fugitive-win">🚁 <b>Fugitif échappé !</b></div>`;
+        } else if (item.type === 'system') {
+            actionHtml = `<div class="history-system">${item.text}</div>`;
+        } else {
+            actionHtml = `<div style="line-height: 1.3;">${item.text}</div>`;
+        }
+
+        const char = gameState.characters?.find(c => c.userId === item.userId);
+        const borderColor = char ? char.color : 'rgba(255,255,255,0.3)';
+        
+        const avatarContent = user?.avatarUrl ? `<img src="${user.avatarUrl}">` : (user ? user.name.substring(0, 2).toUpperCase() : '?');
+        const avatarHtml = user ? `<div class="player-avatar" style="width: 26px; height: 26px; min-width: 26px; font-size: 10px; border-color: ${borderColor};" title="${user.name}">${avatarContent}</div>` : '';
 
         return `
-            <div class="history-item ${isNew ? 'new-item' : ''}" style="border-left-color: #34495e">
+            ${roundHtml}
+            <div class="history-item ${isNew ? 'new-item' : ''}" style="border-left-color: ${item.type === 'system' ? 'transparent' : '#34495e'};">
                 ${badgeHtml}
-                ${avatarHtml}
-                <div style="line-height: 1.3; flex-grow: 1;">${actionHtml}</div>
+                ${item.type !== 'system' ? avatarHtml : ''}
+                <div style="flex-grow: 1; display:flex; flex-direction:column; justify-content:center;">
+                    ${actionHtml}
+                </div>
                 <div class="history-time">${timeStr}</div>
             </div>
         `;
@@ -188,11 +310,19 @@ function updateHistoryUI() {
 }
 
 function showToastFromHistory(item) {
+    // On ne montre jamais l'adrénaline en popup si elle est encore secrète
+    if (item.type === 'adrenaline') {
+        const isMe = item.userId === myPlayerId;
+        if (!isMe && (!gameState.lastRevealTurn || item.turn > gameState.lastRevealTurn)) return;
+    }
+
     const user = gameState.users.find(u => u.id === item.userId);
     if (!user) return;
 
-    const avatarContent = user.avatarUrl ? `<img src="${user.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">` : user.name.substring(0, 2).toUpperCase();
-    const avatarHtml = `<div class="player-avatar" style="width: 28px; height: 28px; min-width: 28px; font-size: 11px; background-color: #34495e; flex-shrink: 0; box-shadow: 0 0 5px #34495e;">${avatarContent}</div>`;
+    const char = gameState.characters?.find(c => c.userId === item.userId);
+    const borderColor = char ? char.color : 'rgba(255,255,255,0.3)';
+    const avatarContent = user.avatarUrl ? `<img src="${user.avatarUrl}">` : user.name.substring(0, 2).toUpperCase();
+    const avatarHtml = `<div class="player-avatar" style="border-color: ${borderColor}; box-shadow: 0 0 5px ${borderColor};">${avatarContent}</div>`;
 
     let actionHtml = '';
     if (item.text) actionHtml = item.text;
@@ -252,14 +382,16 @@ function updateChatUI() {
         const isNew = !isMe && new Date(item.timestamp) > new Date(lastViewed);
         if (isNew) unreadCount++;
         
-        const timeStr = new Date(item.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        const timeStr = getLogDateString(item.timestamp);
         const badgeHtml = isNew ? `<div style="position: absolute; top: -6px; right: -6px; font-size: 9px; background: #2ecc71; color: white; padding: 2px 4px; border-radius: 4px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.5); z-index: 10;">Nouv.</div>` : '';
         
         if (isMe) {
             htmlToInject += `<div class="chat-bubble chat-bubble-own" style="position:relative; margin-bottom: 5px;"><div>${item.text}</div><div style="font-size: 9px; text-align: right; opacity: 0.7; margin-top: 3px;">${timeStr}</div></div>`;
         } else {
-            const avatarContent = user.avatarUrl ? `<img src="${user.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">` : user.name.substring(0, 2).toUpperCase();
-            const avatarHtml = `<div class="player-avatar" style="width: 24px; height: 24px; min-width: 24px; font-size: 10px; background-color: #34495e; flex-shrink: 0;" title="${user.name}">${avatarContent}</div>`;
+            const char = gameState.characters?.find(c => c.userId === item.userId);
+            const borderColor = char ? char.color : 'rgba(255,255,255,0.3)';
+            const avatarContent = user.avatarUrl ? `<img src="${user.avatarUrl}">` : user.name.substring(0, 2).toUpperCase();
+            const avatarHtml = `<div class="player-avatar" style="width: 24px; height: 24px; min-width: 24px; font-size: 10px; border-color: ${borderColor};" title="${user.name}">${avatarContent}</div>`;
             
             htmlToInject += `<div style="display: flex; gap: 6px; align-items: flex-end; align-self: flex-start; max-width: 90%; margin-bottom: 5px;">
                 ${avatarHtml}
@@ -296,8 +428,10 @@ function showToastFromChat(item) {
     const user = gameState.users.find(u => u.id === item.userId);
     if (!user) return;
 
-    const avatarContent = user.avatarUrl ? `<img src="${user.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">` : user.name.substring(0, 2).toUpperCase();
-    const avatarHtml = `<div class="player-avatar" style="width: 28px; height: 28px; min-width: 28px; font-size: 11px; background-color: #34495e; flex-shrink: 0; box-shadow: 0 0 5px #34495e;">${avatarContent}</div>`;
+    const char = gameState.characters?.find(c => c.userId === item.userId);
+    const borderColor = char ? char.color : 'rgba(255,255,255,0.3)';
+    const avatarContent = user.avatarUrl ? `<img src="${user.avatarUrl}">` : user.name.substring(0, 2).toUpperCase();
+    const avatarHtml = `<div class="player-avatar" style="border-color: ${borderColor}; box-shadow: 0 0 5px ${borderColor};">${avatarContent}</div>`;
 
     const toast = document.createElement('div');
     toast.className = 'toast-msg';
@@ -341,6 +475,8 @@ function updateTravelLogUI() {
     const container = document.getElementById('travel-log-content');
     if (!container) return;
     
+    const isFugitive = gameState.characters?.find(c => c.role === 'fugitif')?.userId === myPlayerId;
+    
     let html = '';
     for (let i = 1; i <= MAX_TURNS; i++) {
         const isReveal = REVEAL_TURNS.includes(i);
@@ -351,13 +487,16 @@ function updateTravelLogUI() {
         let textColor = 'white';
         
         if (move) {
+            const isMoveRevealed = gameState.lastRevealTurn && i <= gameState.lastRevealTurn;
+            const showPos = isMoveRevealed || isFugitive;
+
             if (move.transport === 'SKIP') {
-                content = isReveal ? (move.position || 'Zz') : 'Zz';
+                content = showPos ? (move.secretPosition || 'Zz') : 'Zz';
                 bgColor = '#7f8c8d';
             } else {
                 const tInfo = TRANSPORT[move.transport];
                 bgColor = tInfo ? tInfo.color : '#bdc3c7';
-                content = isReveal ? (move.position || '?') : '';
+                content = showPos ? (move.secretPosition || '?') : '';
                 textColor = (move.transport === 'TAXI') ? '#2c3e50' : 'white'; // Texte sombre sur fond jaune/blanc
             }
         }
@@ -414,6 +553,7 @@ function renderWaitingRoom() {
 
     const listEl = document.getElementById('waiting-players-list');
     listEl.innerHTML = `
+        <p style="font-size: 14px; color: #bdc3c7; text-align: center; margin-top: 0;">Cliquez sur 'Incarner' ou ajoutez des Bots pour remplir les rôles.</p>
         <div class="role-container">
             <div class="role-column"><h3 style="margin-top:0; color:#e74c3c;">Le Fugitif (1)</h3>${renderRoleSlot('fugitif', 0, gameState.roles.fugitif)}</div>
             <div class="role-column"><h3 style="margin-top:0; color:#3498db;">Les Policiers (Max 4)</h3>${gameState.roles.policiers.map((userId, i) => renderRoleSlot('policier', i, userId)).join('')}</div>
@@ -428,8 +568,8 @@ function renderWaitingRoom() {
         const isPoliceTaken = gameState.roles.policiers.some(p => p !== null);
         const canStart = isFugitifTaken && isPoliceTaken;
         startBtn.disabled = !canStart;
-        startBtn.innerText = canStart ? "Démarrer la partie !" : "En attente des rôles...";
-        startBtn.style.background = canStart ? "#e67e22" : "gray";
+        startBtn.innerText = canStart ? "Démarrer la Traque !" : "⚠️ Rôles incomplets";
+        if (canStart) { startBtn.style.background = "#e74c3c"; }
     } else {
         startBtn.classList.add('hidden-view'); waitMsg.classList.remove('hidden-view');
     }
@@ -441,9 +581,17 @@ function renderWaitingRoom() {
 
 function renderMap(svg) {
     if (window.isAnimatingMove) return; // Bloque le rafraîchissement pendant une animation
+    window.currentTransportBubble = null; // Nettoyage de la bulle résiduelle
     
     svg.innerHTML = '';
     
+    // 0. Image de Fond du Plateau
+    const bgImg = document.createElementNS("http://www.w3.org/2000/svg", "image");
+    bgImg.setAttribute("href", "Images/Fond.png");
+    bgImg.setAttribute("width", "1448"); // À remplacer par la largeur réelle de ton image !
+    bgImg.setAttribute("height", "1086"); // À remplacer par la hauteur réelle de ton image !
+    svg.appendChild(bgImg);
+
     // 1. On dessine les Métros en premier (Large, sous les autres)
     MAP.links?.filter(l => l.type === 'UNDERGROUND').forEach(link => drawLink(svg, link));
     
@@ -453,6 +601,55 @@ function renderMap(svg) {
     // 3. On dessine les Taxis par-dessus tout (Fin)
     MAP.links?.filter(l => l.type === 'TAXI').forEach(link => drawLink(svg, link));
     
+    // 3.5 Trace du Parcours Révélé du Fugitif
+    if (gameState.lastRevealTurn > 0 && gameState.fugitiveMoves) {
+        const revealedMoves = gameState.fugitiveMoves.filter(m => m.turn <= gameState.lastRevealTurn);
+        if (revealedMoves.length > 0) {
+            const pathNodes = [];
+            revealedMoves.forEach((m, index) => {
+                if (index === 0 && m.fromPosition) {
+                    const startNode = MAP.nodes.find(n => n.id === m.fromPosition);
+                    if (startNode) pathNodes.push(startNode);
+                }
+                if (m.secretPosition) {
+                    const n = MAP.nodes.find(n => n.id === m.secretPosition);
+                    if (n) pathNodes.push(n);
+                }
+            });
+
+            if (pathNodes.length > 1) {
+                for (let i = 0; i < pathNodes.length - 1; i++) {
+                    const p1 = pathNodes[i];
+                    const p2 = pathNodes[i + 1];
+                    
+                    if (p1.id === p2.id) continue; // Ignore les sauts de tour (repos sur place)
+
+                    // Le segment de ligne en pointillé fluo
+                    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+                    line.setAttribute("x1", p1.x); line.setAttribute("y1", p1.y);
+                    line.setAttribute("x2", p2.x); line.setAttribute("y2", p2.y);
+                    line.setAttribute("stroke", "#ccff00"); // Jaune fluo
+                    line.setAttribute("stroke-width", "4");
+                    line.setAttribute("stroke-dasharray", "8, 8");
+                    line.setAttribute("style", "filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.8));");
+                    svg.appendChild(line);
+
+                    // La flèche directionnelle placée exactement au milieu
+                    const midX = (p1.x + p2.x) / 2;
+                    const midY = (p1.y + p2.y) / 2;
+                    const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * (180 / Math.PI);
+
+                    const arrow = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+                    arrow.setAttribute("points", "-8,-6 8,0 -8,6");
+                    arrow.setAttribute("fill", "#ccff00");
+                    arrow.setAttribute("transform", `translate(${midX}, ${midY}) rotate(${angle})`);
+                    arrow.setAttribute("style", "filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.8));");
+                    svg.appendChild(arrow);
+                }
+            }
+        }
+    }
+
     // 4. Détermination des destinations jouables (si c'est notre tour)
     const activeChar = gameState.characters ? gameState.characters[gameState.currentPlayerIndex] : null;
     const isMyTurn = activeChar?.userId === myPlayerId;
@@ -474,6 +671,11 @@ function renderMap(svg) {
                     if (!playableDestinations[targetId]) playableDestinations[targetId] = [];
                     if (!playableDestinations[targetId].some(t => t.type === l.type)) {
                         playableDestinations[targetId].push({ type: l.type, ...transportInfo });
+                    }
+                    
+                    // NOUVEAU : Identification des stations à haut risque
+                    if (activeChar.role === 'fugitif' && gameState.options?.riskyMove !== false && isNodeRisky(targetId)) {
+                        playableDestinations[targetId].isRisky = true;
                     }
                 }
             }
@@ -513,9 +715,14 @@ function animateVehicleMove(pathNodeIds, transportType, callback, charId) {
     const rectGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
     
     let vehicleVisual;
-    if (transportType === 'BUS') {
+    if (transportType === 'BUS' || transportType === 'TAXI' || transportType === 'UNDERGROUND') {
+        const imageMap = {
+            'BUS': 'Icone_bus.png',
+            'TAXI': 'Icone_taxi.png',
+            'UNDERGROUND': 'Icone_métro.png'
+        };
         vehicleVisual = document.createElementNS("http://www.w3.org/2000/svg", "image");
-        vehicleVisual.setAttribute("href", "Images/Icone_bus.png");
+        vehicleVisual.setAttribute("href", `Images/${imageMap[transportType]}`);
         vehicleVisual.setAttribute("width", "60"); // Taille de l'image
         vehicleVisual.setAttribute("height", "60");
         vehicleVisual.setAttribute("x", "-30"); // Décalage pour centrer exactement (Moitié de la largeur)
@@ -537,16 +744,16 @@ function animateVehicleMove(pathNodeIds, transportType, callback, charId) {
     rectGroup.appendChild(vehicleVisual);
     svg.appendChild(rectGroup);
     
-    // Vitesse selon le transport (RALENTIE pour mieux apprécier l'animation)
-    let durationPerSegment = 1000;
-    if (transportType === 'TAXI') durationPerSegment = 1800; // Très lent
-    else if (transportType === 'BUS') durationPerSegment = 1200; // Moyen
-    else if (transportType === 'UNDERGROUND') durationPerSegment = 800; // Rapide
-    else if (transportType === 'BLACK') durationPerSegment = 1400;
+    let durationPerSegment = 1800; // Tous les véhicules avancent désormais à la même vitesse (lente)
     
     const totalDuration = durationPerSegment * (pathNodeIds.length - 1);
-    if (transportType === 'BUS') {
-        playSoundWithFade('Audio/Démarrage_bus.mp3', totalDuration);
+    const audioMap = {
+        'BUS': 'Audio/Démarrage_bus.mp3',
+        'TAXI': 'Audio/Son_taxi.mp3',
+        'UNDERGROUND': 'Audio/Son_métro.mp3'
+    };
+    if (audioMap[transportType]) {
+        playSoundWithFade(audioMap[transportType], totalDuration);
     }
 
     let currentStep = 0;
@@ -558,31 +765,69 @@ function animateVehicleMove(pathNodeIds, transportType, callback, charId) {
             if (callback) callback();
             return;
         }
-        const n1 = MAP.nodes.find(n => n.id === pathNodeIds[currentStep]);
-        const n2 = MAP.nodes.find(n => n.id === pathNodeIds[currentStep + 1]);
-        
-        const angle = Math.atan2(n2.y - n1.y, n2.x - n1.x) * (180 / Math.PI);
-        
-        let transform1, transform2;
-        if (transportType === 'BUS') {
-            // Le bus reste horizontal, effet miroir s'il va vers la gauche
-            const scaleX = n2.x < n1.x ? -1 : 1;
-            transform1 = `translate(${n1.x}, ${n1.y}) scale(${scaleX}, 1)`;
-            transform2 = `translate(${n2.x}, ${n2.y}) scale(${scaleX}, 1)`;
-        } else {
-            // Les autres véhicules s'inclinent pour suivre la route
-            transform1 = `translate(${n1.x}, ${n1.y}) rotate(${angle})`;
-            transform2 = `translate(${n2.x}, ${n2.y}) rotate(${angle})`;
+        const n1Id = pathNodeIds[currentStep];
+        const n2Id = pathNodeIds[currentStep + 1];
+        const n1 = MAP.nodes.find(n => n.id === n1Id);
+        const n2 = MAP.nodes.find(n => n.id === n2Id);
+
+        const link = MAP.links.find(l => 
+            l.type === transportType && 
+            ((l.from === n1Id && l.to === n2Id) || (l.to === n1Id && l.from === n2Id))
+        );
+
+        let isReversed = link && link.to === n1Id;
+        let pathElement;
+        let pathLength = 0;
+
+        // Création d'un rail invisible temporaire pour calculer la trajectoire
+        if (link && link.svgPath) {
+            pathElement = document.createElementNS("http://www.w3.org/2000/svg", "path");
+            pathElement.setAttribute("d", link.svgPath);
+            pathElement.style.display = "none";
+            svg.appendChild(pathElement);
+            pathLength = pathElement.getTotalLength();
         }
 
-        rectGroup.style.transition = 'none';
-        rectGroup.setAttribute("transform", transform1);
-        rectGroup.getBoundingClientRect(); // Force le navigateur à enregistrer la position de départ
-        
-        rectGroup.style.transition = `transform ${durationPerSegment}ms linear`;
-        rectGroup.setAttribute("transform", transform2);
-        
-        setTimeout(() => { currentStep++; moveNext(); }, durationPerSegment);
+        const startTime = performance.now();
+        const scaleX = (n2.x < n1.x) ? -1 : 1; // Orientation du sprite
+
+        function animateFrame(now) {
+            const elapsed = now - startTime;
+            const progress = Math.min(elapsed / durationPerSegment, 1);
+
+            let currentX, currentY;
+
+            if (pathElement && pathLength > 0) {
+                // Suit la courbe parfaite !
+                const currentDist = isReversed ? pathLength * (1 - progress) : pathLength * progress;
+                const pt = pathElement.getPointAtLength(currentDist);
+                currentX = pt.x;
+                currentY = pt.y;
+            } else {
+                // Sécurité : avance en ligne droite si aucun tracé
+                currentX = n1.x + (n2.x - n1.x) * progress;
+                currentY = n1.y + (n2.y - n1.y) * progress;
+            }
+
+            let transform;
+            if (transportType === 'BUS' || transportType === 'TAXI' || transportType === 'UNDERGROUND') {
+                transform = `translate(${currentX}, ${currentY}) scale(${scaleX}, 1)`;
+            } else {
+                let angle = Math.atan2(n2.y - n1.y, n2.x - n1.x) * (180 / Math.PI);
+                transform = `translate(${currentX}, ${currentY}) rotate(${angle})`;
+            }
+
+            rectGroup.setAttribute("transform", transform);
+
+            if (progress < 1) {
+                requestAnimationFrame(animateFrame);
+            } else {
+                if (pathElement) pathElement.remove(); // Nettoyage
+                currentStep++;
+                moveNext();
+            }
+        }
+        requestAnimationFrame(animateFrame);
     }
     moveNext();
 }
@@ -606,162 +851,201 @@ function drawPawn(svg, node, char) {
         g.setAttribute("class", "pawn-active");
     }
 
-        if (char.role === 'policier') {
-            const imgSize = 50;
-            const img = document.createElementNS("http://www.w3.org/2000/svg", "image");
-            img.setAttribute("href", "Images/Icone_policier_jaune.png");
-            img.setAttribute("width", imgSize);
-            img.setAttribute("height", imgSize);
-            
-            img.setAttribute("x", node.x - (imgSize / 2));
-            img.setAttribute("y", node.y - 12 - (imgSize / 2));
-            
-            img.setAttribute("style", `filter: drop-shadow(0px 3px 4px rgba(0,0,0,0.6)) drop-shadow(0px 0px 6px ${char.color});`);
-            
-            g.appendChild(img);
+        const imgSize = 65; // Plus grand (était 50)
+    const offsetY = 20; // Plus haut pour voir le nom de la station (était 12)
+
+    // Fond coloré (Pastille) pour faire ressortir le pion sur la carte
+    const bgCircle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    bgCircle.setAttribute("cx", node.x);
+    bgCircle.setAttribute("cy", node.y - offsetY);
+    bgCircle.setAttribute("r", "22");
+    bgCircle.setAttribute("fill", char.color);
+    bgCircle.setAttribute("stroke", "white");
+    bgCircle.setAttribute("stroke-width", "2");
+
+    const img = document.createElementNS("http://www.w3.org/2000/svg", "image");
+    img.setAttribute("width", imgSize);
+    img.setAttribute("height", imgSize);
+    img.setAttribute("x", node.x - (imgSize / 2));
+    img.setAttribute("y", node.y - offsetY - (imgSize / 2));
+    
+    if (char.role === 'policier') {
+        img.setAttribute("href", "Images/Icone_policier_jaune.png");
+        bgCircle.setAttribute("style", `filter: drop-shadow(0px 4px 6px rgba(0,0,0,0.8)); opacity: 0.9;`);
+        img.setAttribute("style", `filter: drop-shadow(0px 0px 5px ${char.color});`);
+    } else {
+        img.setAttribute("href", "Images/Icone_fugitif.png");
+        if (!char.position) {
+            // Mode Caché : Légère transparence
+            bgCircle.setAttribute("style", `filter: drop-shadow(0px 4px 6px rgba(0,0,0,0.8)); opacity: 0.3;`);
+            img.setAttribute("style", `filter: drop-shadow(0px 0px 8px #e74c3c); opacity: 0.6;`);
         } else {
-            const imgSize = 50;
-            const img = document.createElementNS("http://www.w3.org/2000/svg", "image");
-            img.setAttribute("href", "Images/Icone_fugitif.png");
-            img.setAttribute("width", imgSize);
-            img.setAttribute("height", imgSize);
-            
-            img.setAttribute("x", node.x - (imgSize / 2));
-            img.setAttribute("y", node.y - 12 - (imgSize / 2));
-            
-            if (!char.position) {
-                // Mode Caché : Légère transparence et halo rouge
-                img.setAttribute("style", `filter: drop-shadow(0px 3px 4px rgba(0,0,0,0.6)) drop-shadow(0px 0px 8px #e74c3c); opacity: 0.7;`);
-            } else {
-                // Mode Révélé : Opaque avec le halo classique
-                img.setAttribute("style", `filter: drop-shadow(0px 3px 4px rgba(0,0,0,0.6)) drop-shadow(0px 0px 6px ${char.color});`);
-            }
-            g.appendChild(img);
+            // Mode Révélé : Opaque
+            bgCircle.setAttribute("style", `filter: drop-shadow(0px 4px 6px rgba(0,0,0,0.8)); opacity: 0.9;`);
+            img.setAttribute("style", `filter: drop-shadow(0px 0px 6px ${char.color});`);
+        }
     }
+    
+    g.appendChild(bgCircle);
+    g.appendChild(img);
 
     svg.appendChild(g);
 }
 
 function drawLink(svg, link) {
-    const fromNode = MAP.nodes.find(n => n.id === link.from);
-    const toNode = MAP.nodes.find(n => n.id === link.to);
-    if (!fromNode || !toNode) return;
+    if (!link.svgPath) return; // Si la ligne n'a pas de courbe de Figma, on l'ignore
 
-    const fullPath = [link.from, ...(link.path || []), link.to];
-    const points = [];
-    fullPath.forEach(nodeId => {
-        const n = MAP.nodes.find(n => n.id === nodeId);
-        if (n) points.push(`${n.x},${n.y}`);
-    });
-
-    const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
-    polyline.setAttribute("points", points.join(" "));
-    polyline.setAttribute("fill", "none");
-
-    const transportInfo = TRANSPORT[link.type];
-    let color = transportInfo ? transportInfo.color : "white";
-    let width = 2;
-    let opacity = 1;
-
-    // Différenciation élégante des lignes
-    if (link.type === 'UNDERGROUND') {
-        width = 8; opacity = 0.6;
-    } else if (link.type === 'BUS') {
-        width = 5; opacity = 0.8;
-    } else if (link.type === 'TAXI') {
-        width = 2; opacity = 1;
-    }
-
-    polyline.setAttribute("stroke", color);
-    polyline.setAttribute("stroke-width", width);
-    polyline.setAttribute("opacity", opacity);
-    polyline.setAttribute("stroke-linecap", "round");
-    polyline.setAttribute("stroke-linejoin", "round");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", link.svgPath);
+    path.setAttribute("fill", "none");
     
-    svg.appendChild(polyline);
+    // Rendu TOTALEMENT invisible, l'image de fond fait le travail visuel !
+    path.setAttribute("stroke", "transparent");
+    path.setAttribute("opacity", "0");
+    
+    svg.appendChild(path);
 }
 
 function drawNode(svg, node, availableTransports) {
     const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
     
     if (availableTransports && availableTransports.length > 0) {
+        const isRisky = availableTransports.isRisky;
         const pulse = document.createElementNS("http://www.w3.org/2000/svg", "circle");
         pulse.setAttribute("cx", node.x); pulse.setAttribute("cy", node.y); pulse.setAttribute("r", "22");
-        pulse.setAttribute("fill", "transparent");
-        pulse.setAttribute("stroke", "#f1c40f"); 
+        pulse.setAttribute("fill", isRisky ? "rgba(231, 76, 60, 0.3)" : "transparent");
+        pulse.setAttribute("stroke", isRisky ? "#e74c3c" : "#f1c40f"); 
         pulse.setAttribute("stroke-width", "4");
-        pulse.classList.add("playable-node");
+        pulse.classList.add(isRisky ? "playable-node-risky" : "playable-node");
         g.appendChild(pulse);
         
-        g.style.cursor = "pointer";
-        g.onclick = async () => {
-            if (window.isDraggingMap) return;
-            const options = availableTransports.map(t => ({
-                label: `${t.name} (-${t.cost} PA)`,
-                value: t.type,
-                bgColor: t.color
-            }));
-            options.push({ label: "Annuler", value: null, class: "cancel" });
-            
-            const chosenTransport = await showModal(`Rejoindre la station ${node.id} ?\nChoisissez votre transport :`, options);
-            
-            if (chosenTransport) {
-                const activeChar = gameState.characters[gameState.currentPlayerIndex];
-                const tInfo = TRANSPORT[chosenTransport];
-                
-                if (activeChar.ap < tInfo.cost) return alert("Pas assez de PA pour ce transport !");
-                
-                const currentPos = (activeChar.role === 'fugitif' && activeChar.userId === myPlayerId) ? activeChar.secretPosition : activeChar.position;
-                
-                const link = MAP.links.find(l => 
-                    l.type === chosenTransport && 
-                    ((l.from === currentPos && l.to === node.id) || (l.to === currentPos && l.from === node.id))
-                );
-                
-                let pathIds = [currentPos, node.id];
-                if (link) {
-                    pathIds = [link.from, ...(link.path || []), link.to];
-                    if (link.to === currentPos) pathIds.reverse(); // Si on parcourt la route à l'envers
-                }
-                
-                window.lastArrivalCharId = activeChar.id;
+        if (isRisky) {
+            const warn = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            warn.setAttribute("x", node.x + 13);
+            warn.setAttribute("y", node.y - 13);
+            warn.setAttribute("font-size", "14px");
+            warn.textContent = "⚡";
+            warn.style.pointerEvents = "none";
+            g.appendChild(warn);
+        }
 
-                animateVehicleMove(pathIds, chosenTransport, () => {
-                    moveToNode(node.id, chosenTransport); // Le vrai déplacement logique
-                }, activeChar.id);
+        g.style.cursor = "pointer";
+        g.onclick = (e) => {
+            e.stopPropagation(); // Évite de fermer la bulle immédiatement
+            if (window.isDraggingMap) return;
+            
+            if (window.currentTransportBubble) {
+                window.currentTransportBubble.remove();
+                window.currentTransportBubble = null;
             }
+            
+            const foWidth = 280;
+            const foHeight = 140;
+            
+            let bubbleY = node.y - foHeight - 5;
+            let isBelow = false;
+            if (bubbleY < 0) { bubbleY = node.y + 20; isBelow = true; } // Si la station est trop haute, on affiche en dessous
+
+            const fo = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
+            fo.setAttribute("x", node.x - foWidth / 2);
+            fo.setAttribute("y", bubbleY);
+            fo.setAttribute("width", foWidth);
+            fo.setAttribute("height", foHeight);
+
+            const imageMap = { 'BUS': 'Icone_bus.png', 'TAXI': 'Icone_taxi.png', 'UNDERGROUND': 'Icone_métro.png', 'BLACK': 'Icone_secret.png' };
+            
+            let html = `<div xmlns="http://www.w3.org/1999/xhtml" class="transport-bubble-wrapper ${isBelow ? 'bubble-below' : ''}">`;
+            
+            const riskHtml = isRisky ? `<div style="background: rgba(231,76,60,0.95); color: white; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; border: 1px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.5); text-shadow: 1px 1px 1px black; margin-bottom: 6px; text-align: center;">⚡ Risque : Jauge restaurée & +1 PA Max</div>` : '';
+
+            if (isBelow) {
+                html += `<div class="transport-bubble-arrow arrow-up"></div><div style="display:flex; flex-direction:column; align-items:center;">${riskHtml}<div class="transport-bubble">`;
+            } else {
+                html += `<div style="display:flex; flex-direction:column; align-items:center;">${riskHtml}<div class="transport-bubble">`;
+            }
+            
+            availableTransports.forEach(t => {
+                const imgSrc = imageMap[t.type] ? `<img src="Images/${imageMap[t.type]}" />` : `<span style="font-size:20px">❓</span>`;
+                html += `<div class="transport-btn" data-type="${t.type}" style="border-color: ${t.color};" title="${t.name}">
+                            ${imgSrc}
+                            <span class="transport-cost">-${t.cost} PA</span>
+                         </div>`;
+            });
+            
+            if (isBelow) html += `</div></div>`;
+            else html += `</div></div><div class="transport-bubble-arrow"></div>`;
+            html += `</div>`;
+            
+            fo.innerHTML = html;
+            svg.appendChild(fo);
+            window.currentTransportBubble = fo;
+
+            // Écouteurs de clics sur les boutons de la bulle
+            fo.querySelectorAll('.transport-btn').forEach(btn => {
+                btn.onclick = (ev) => {
+                    ev.stopPropagation();
+                    const chosenTransport = btn.getAttribute('data-type');
+                    const activeChar = gameState.characters[gameState.currentPlayerIndex];
+                    const tInfo = TRANSPORT[chosenTransport];
+                    
+                    if (activeChar.ap < tInfo.cost) return alert("Pas assez de PA pour ce transport !");
+                    
+                    fo.remove();
+                    window.currentTransportBubble = null;
+
+                    const currentPos = (activeChar.role === 'fugitif' && activeChar.userId === myPlayerId) ? activeChar.secretPosition : activeChar.position;
+                    const link = MAP.links.find(l => l.type === chosenTransport && ((l.from === currentPos && l.to === node.id) || (l.to === currentPos && l.from === node.id)));
+                    
+                    let pathIds = [currentPos, node.id];
+                    if (link) { pathIds = [link.from, ...(link.path || []), link.to]; if (link.to === currentPos) pathIds.reverse(); }
+                    
+                    window.lastArrivalCharId = activeChar.id;
+                    animateVehicleMove(pathIds, chosenTransport, () => { moveToNode(node.id, chosenTransport); }, activeChar.id);
+                };
+            });
         };
     }
 
     const hasUnderground = MAP.links.some(l => l.type === 'UNDERGROUND' && (l.from === node.id || l.to === node.id));
     const hasBus = MAP.links.some(l => l.type === 'BUS' && (l.from === node.id || l.to === node.id));
-    const hasTaxi = MAP.links.some(l => l.type === 'TAXI' && (l.from === node.id || l.to === node.id));
 
-    let currentRadius = 18;
-    if (hasUnderground) {
-        const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-        c.setAttribute("cx", node.x); c.setAttribute("cy", node.y); c.setAttribute("r", currentRadius); c.setAttribute("fill", TRANSPORT.UNDERGROUND.color); g.appendChild(c);
-        currentRadius -= 3;
-    }
+    // 1. Cercle de base (Gris/Blanc pour Taxi)
+    const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    c.setAttribute("cx", node.x); c.setAttribute("cy", node.y);
+    c.setAttribute("r", "11");
+    c.setAttribute("fill", "#D9D9D9");
+    c.setAttribute("stroke", "black");
+    c.setAttribute("stroke-width", "1");
+    g.appendChild(c);
+
+    // 2. Bus (Demi-cercle inférieur Bleu)
     if (hasBus) {
-        const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-        c.setAttribute("cx", node.x); c.setAttribute("cy", node.y); c.setAttribute("r", currentRadius); c.setAttribute("fill", TRANSPORT.BUS.color); g.appendChild(c);
-        currentRadius -= 3;
-    }
-    if (hasTaxi) {
-        const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-        c.setAttribute("cx", node.x); c.setAttribute("cy", node.y); c.setAttribute("r", currentRadius); c.setAttribute("fill", TRANSPORT.TAXI.color); g.appendChild(c);
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        // L'arc SVG remplace l'ancien masque de Figma (beaucoup plus rapide)
+        path.setAttribute("d", `M ${node.x - 11} ${node.y} A 11 11 0 0 0 ${node.x + 11} ${node.y} Z`);
+        path.setAttribute("fill", "#027EB7");
+        path.setAttribute("stroke", "black");
+        path.setAttribute("stroke-width", "1");
+        g.appendChild(path);
     }
 
-    const center = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-    center.setAttribute("cx", node.x); center.setAttribute("cy", node.y); center.setAttribute("r", "11");
-    center.setAttribute("fill", "#ecf0f1");
-    g.appendChild(center);
+    // 3. Rectangle central (Rouge pour Métro, Blanc sinon)
+    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("x", node.x - 8.25);
+    rect.setAttribute("y", node.y - 4.25);
+    rect.setAttribute("width", "16.5");
+    rect.setAttribute("height", "8.5");
+    rect.setAttribute("fill", hasUnderground ? "#ED3008" : "#FFFFFF");
+    rect.setAttribute("stroke", "black");
+    rect.setAttribute("stroke-width", "0.5");
+    g.appendChild(rect);
 
+    // 4. Le Numéro de la Station
     const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    text.setAttribute("x", node.x); text.setAttribute("y", node.y + 4); // +4 pour centrer verticalement
-    text.setAttribute("text-anchor", "middle"); 
-    text.setAttribute("style", "font-size: 12px; font-weight: bold; fill: #2c3e50; font-family: sans-serif; pointer-events: none;");
+    text.setAttribute("x", node.x);
+    text.setAttribute("y", node.y + 3.5); // Centrage précis
+    text.setAttribute("text-anchor", "middle");
+    text.setAttribute("style", "font-size: 9px; font-weight: bold; fill: black; font-family: sans-serif; pointer-events: none;");
     text.textContent = node.id;
     
     g.appendChild(text); 
@@ -778,7 +1062,7 @@ function updateUI() {
     const turnBanner = document.getElementById('turn-banner');
     if (turnBanner) {
         if (activeChar?.userId === myPlayerId) {
-            turnBanner.innerHTML = `🟢 C'est à vous ! <button onclick="skipTurn()" style="margin-left:10px; padding:4px 8px; border-radius:4px; border:none; background:white; color:#2ecc71; font-weight:bold; cursor:pointer; box-shadow:0 2px 4px rgba(0,0,0,0.2);">Passer (+2 PA)</button>`; turnBanner.className = "turn-active";
+            turnBanner.innerHTML = `🟢 C'est à vous ! <button onclick="skipTurn()" style="margin-left:10px; padding:4px 8px; border-radius:4px; border:none; background:white; color:#2ecc71; font-weight:bold; cursor:pointer; box-shadow:0 2px 4px rgba(0,0,0,0.2);">Passer <span class="hide-on-mobile">(+2 PA)</span></button>`; turnBanner.className = "turn-active";
         } else {
             turnBanner.innerText = "🔴 En attente de " + (activeChar ? activeChar.name : "...") + "..."; turnBanner.className = "turn-waiting";
         }
@@ -789,17 +1073,10 @@ function updateUI() {
         playersContainer.innerHTML = '';
         
         const fugitifContainer = document.createElement('div');
-        fugitifContainer.style.display = 'flex';
-        fugitifContainer.style.marginRight = '10px';
+        fugitifContainer.className = 'fugitif-container';
         
         const policeContainer = document.createElement('div');
-        policeContainer.style.display = 'flex';
-        policeContainer.style.gap = '5px';
-        policeContainer.style.flexWrap = 'wrap';
-        policeContainer.style.flex = '1';
-        policeContainer.style.borderLeft = '2px dashed rgba(255,255,255,0.3)';
-        policeContainer.style.paddingLeft = '10px';
-        policeContainer.style.alignItems = 'center';
+        policeContainer.className = 'police-container';
 
         gameState.characters.forEach((char, index) => {
             const isActive = index === gameState.currentPlayerIndex;
@@ -809,29 +1086,38 @@ function updateUI() {
             if (isActive) { cardDiv.style.borderColor = char.color; cardDiv.style.boxShadow = `0 0 15px ${char.color}80`; }
             const user = gameState.users.find(u => u.id === char.userId);
             const isOnline = user && onlinePlayers[user.id]; const onlineIcon = isOnline ? "🟢" : "🔴";
-            const avatarImg = user?.avatarUrl ? `<img src="${user.avatarUrl}" style="width:16px; height:16px; border-radius:50%; vertical-align:middle; margin-right:4px; object-fit:cover;">` : '';
             
+            const avatarContent = user?.avatarUrl ? `<img src="${user.avatarUrl}">` : (user ? user.name.substring(0, 2).toUpperCase() : '?');
+            const avatarImg = `<div class="player-avatar" style="width:22px; height:22px; min-width:22px; font-size:10px; margin-right:4px; border-color: ${char.color};">${avatarContent}</div>`;
+            
+            // Action au clic : centrer sur le joueur
+            cardDiv.onclick = () => {
+                const targetPos = (char.role === 'fugitif' && char.userId === myPlayerId && char.secretPosition) ? char.secretPosition : char.position;
+                if (targetPos) focusOnNode(targetPos);
+            };
+
             if (char.role === 'fugitif') {
-                cardDiv.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+                cardDiv.style.backgroundColor = 'rgba(231, 76, 60, 0.35)'; // Fond rouge translucide pour le Fugitif
                 cardDiv.style.border = `1px solid ${char.color}`;
             }
 
-            let displayPos = char.position || '?';
-            if (char.role === 'fugitif' && char.userId === myPlayerId && char.secretPosition) {
-                displayPos = char.secretPosition + ' 🕵️'; // Montre la position avec un emoji pour rappeler le secret
+            const isFugitive = char.role === 'fugitif';
+            const isMeChar = char.userId === myPlayerId;
+            let apHtml = '';
+            
+            // Cacher les PA du fugitif à la police
+            if (isFugitive && !isMeChar) {
+                apHtml = `<div class="ap-container" title="Points d'Action (Cachés)"><div class="ap-bar" style="width: 100%; background: repeating-linear-gradient(45deg, #2c3e50, #2c3e50 5px, #34495e 5px, #34495e 10px);"></div><div class="ap-text">⚡ ? / ? PA</div></div>`;
+            } else {
+                const apPercent = (char.ap / char.maxAp) * 100;
+                const apColor = isFugitive ? 'linear-gradient(90deg, #c0392b, #e74c3c)' : 'linear-gradient(90deg, #d35400, #f39c12)';
+                apHtml = `<div class="ap-container" title="Points d'Action"><div class="ap-bar" style="width: ${apPercent}%; background: ${apColor};"></div><div class="ap-text">⚡ ${char.ap} / ${char.maxAp} PA</div></div>`;
             }
 
-            const apPercent = (char.ap / char.maxAp) * 100;
-            const apColor = char.role === 'fugitif' ? 'linear-gradient(90deg, #c0392b, #e74c3c)' : 'linear-gradient(90deg, #d35400, #f39c12)';
-
             cardDiv.innerHTML = `
-                <div class="player-name" ${isActive ? `style="color: ${char.color};"` : ''}>${onlineIcon} ${avatarImg}${char.name}</div>
+                <div class="player-name" ${isActive ? `style="color: ${char.color};"` : ''}>${onlineIcon} ${avatarImg}<span class="hide-on-mobile" style="margin-left:4px;">${char.name}</span></div>
                 <div class="player-stats">
-                    <div class="stat-item" style="justify-content: space-between; padding: 0 5px;" title="Position"><span class="stat-icon">📍</span><span class="stat-value">${displayPos}</span></div>
-                    <div class="ap-container" title="Points d'Action">
-                        <div class="ap-bar" style="width: ${apPercent}%; background: ${apColor};"></div>
-                        <div class="ap-text">⚡ ${char.ap} / ${char.maxAp} PA</div>
-                    </div>
+                    ${apHtml}
                 </div>
             `;
             

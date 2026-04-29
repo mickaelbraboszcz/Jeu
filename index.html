@@ -1,64 +1,85 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Train Game Dev</title>
+    <title>Le Fugitif</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="theme-color" content="#2c3e50">
     <link rel="manifest" href="manifest.json">
-    <link rel="stylesheet" href="style.css?v=25">
+    <link rel="stylesheet" href="style.css?v=58">
 </head>
 <body>
-    <div id="lobby-container">
-        <h1 style="text-shadow: 2px 2px 4px black;">🚂 Les Aventuriers du Rail</h1>
+    <div id="lobby-container" class="fullscreen-view">
+        <div class="header-section">
+            <h1 style="text-shadow: 2px 2px 4px black; margin: 0;">🕵️‍♂️ Le Fugitif</h1>
+        </div>
         
         <!-- Section de connexion -->
-        <div id="auth-section">
-            <button class="lobby-btn" style="background: #db4437;" onclick="loginWithGoogle()">S'identifier avec Google</button>
+        <div id="auth-section" style="margin-top: 20px; text-align: center;">
+            <p style="font-style: italic; color: #bdc3c7;">Base de données d'Interpol</p>
+            <button class="lobby-btn" style="background: #db4437; display: flex; align-items: center; justify-content: center; gap: 10px; margin: 0 auto;" onclick="loginWithGoogle()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M12.545,10.239v3.821h5.445c-0.712,2.315-2.647,3.972-5.445,3.972c-3.332,0-6.033-2.701-6.033-6.032s2.701-6.032,6.033-6.032c1.498,0,2.866,0.549,3.921,1.453l2.814-2.814C17.503,2.988,15.139,2,12.545,2C7.021,2,2.543,6.477,2.543,12s4.478,10,10.002,10c8.396,0,10.249-7.85,9.426-11.748L12.545,10.239z"/></svg>
+                S'identifier avec Google
+            </button>
         </div>
 
-        <!-- Actions du salon (cachées si non connecté) xxx-->
-        <div id="lobby-actions" class="hidden-view" style="width: 100%; display: flex; flex-direction: column; align-items: center;">
-            <p style="font-size: 18px;">Bienvenue, <b id="user-name-display" style="color: #2ecc71;"></b> ! <a href="#" onclick="logout()" style="color: #e74c3c; font-size: 14px; margin-left: 10px;">(Déconnexion)</a></p>
-            <input type="text" id="game-name-input" class="lobby-input" placeholder="Nom de la partie (Optionnel)" maxlength="30" style="margin-top: 15px;" />
-            <button class="lobby-btn" onclick="createNewGame()">Créer une nouvelle partie</button>
-            <div class="game-list" id="games-list">
-                <i>Chargement des parties en cours...</i>
+        <!-- Actions du salon -->
+        <div id="lobby-actions" class="hidden-view main-menu-layout">
+            <div class="menu-scrollable-content">
+                <p style="font-size: 18px; margin-top: 0; text-align: center;">Agent <b id="user-name-display" style="color: #3498db;"></b> <a href="#" onclick="logout()" style="color: #e74c3c; font-size: 12px; margin-left: 10px; text-decoration: none; border: 1px solid #e74c3c; padding: 2px 6px; border-radius: 4px;">Déconnexion</a></p>
+                <div style="text-align: center;">
+                    <input type="text" id="game-name-input" class="lobby-input" placeholder="Nom de code de l'opération..." maxlength="30" style="margin-top: 10px; width: 100%; box-sizing: border-box; border-color: #3498db;" />
+                </div>
+                <h3 style="margin-top: 20px; margin-bottom: 10px; border-bottom: 1px solid #7f8c8d; padding-bottom: 5px; width: 100%; text-align: left; font-size: 16px; color: #bdc3c7;">Opérations en cours sur le réseau :</h3>
+                <div class="game-list" id="games-list" style="width: 100%; padding: 0; background: transparent; box-shadow: none;">
+                    <i>Chargement des parties en cours...</i>
+                </div>
+            </div>
+            <div class="menu-bottom-bar">
+                <button class="lobby-btn" style="background: #e74c3c; width: 100%; margin: 0;" onclick="createNewGame()">Créer une Opération</button>
             </div>
         </div>
     </div>
 
-    <!-- NOUVEAU : Salon d'attente avant le début du jeu xxx-->
-    <div id="waiting-room-container" class="hidden-view" style="display:flex; flex-direction:column; align-items:center; color:white; margin-top: 10vh; width:100%;">
-        <div style="width: 100%; display: flex; justify-content: flex-end; padding-right: 20px; box-sizing: border-box; margin-top: -10px;">
+    <!-- Salon d'attente avant le début du jeu -->
+    <div id="waiting-room-container" class="hidden-view fullscreen-view">
+        <div class="header-section" style="display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; box-sizing: border-box;">
+            <div style="text-align: left;">
+                <h2 style="text-shadow: 2px 2px 4px black; font-size:24px; margin: 0;">📁 Dossier d'Opération</h2>
+                <p style="font-size:14px; margin: 5px 0 0 0; color: #bdc3c7;">Opération : <span id="waiting-game-id" style="font-weight:bold; color:#e74c3c;"></span></p>
+            </div>
             <button onclick="toggleChatMenu()" style="padding: 8px 15px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5); border-radius: 4px; cursor: pointer; font-weight: bold; position: relative;">
                 💬 Chat
                 <span id="chat-badge-lobby" class="history-badge-alert hidden-view"></span>
             </button>
         </div>
-        <h2 style="text-shadow: 2px 2px 4px black; font-size:28px;">⏳ Salle d'attente</h2>
-        <p style="font-size:18px;"><span id="waiting-game-id" style="font-weight:bold; color:#e67e22;"></span></p>
-        <div id="game-options-container"></div>
-        <div id="waiting-players-list" style="background: rgba(0,0,0,0.5); padding: 20px; border-radius: 8px; width: 90%; max-width: 400px; margin: 20px 0; font-size:18px; line-height:1.8;"></div>
-        <button id="start-game-btn" class="lobby-btn hidden-view" onclick="startActiveGame()"></button>
-        <p id="waiting-msg" style="color: #f39c12; font-style: italic; font-size:18px; text-align:center;">En attente du créateur de la partie...</p>
-        <button onclick="leaveGameToLobby()" style="margin-top: 20px; padding: 10px 20px; background: #7f8c8d; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">⬅ Retour à l'accueil</button>
+
+        <div class="menu-scrollable-content" style="width: 100%; max-width: 600px; padding: 0 15px;">
+            <div id="game-options-container" style="text-align: center;"></div>
+            <div id="waiting-players-list" style="background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px; width: 100%; box-sizing: border-box; margin: 15px 0; font-size:16px; line-height:1.8;"></div>
+            <p id="waiting-msg" style="color: #f39c12; font-style: italic; font-size:16px; text-align:center;">En attente du créateur de la partie...</p>
+        </div>
+
+        <div class="menu-bottom-bar" style="width: 100%; max-width: 600px; display: flex; flex-direction: column; gap: 10px; padding: 15px; background: transparent; border: none;">
+            <button id="start-game-btn" class="lobby-btn hidden-view" style="width: 100%; margin: 0;" onclick="startActiveGame()"></button>
+            <button onclick="leaveGameToLobby()" style="width: 100%; padding: 12px; background: #7f8c8d; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.3); margin: 0;">⬅ Retour à l'accueil</button>
+        </div>
     </div>
 
     <div id="game-container" class="hidden-view">
         <div id="ui-top">
-            <div style="display: flex; justify-content: space-between; width: 100%; align-items: center; padding: 0 10px 5px 10px; box-sizing: border-box;">
+            <div id="game-top-bar">
                 <div style="display: flex; gap: 5px; flex: 1;">
-                    <button onclick="leaveGameToLobby()" style="padding: 6px 12px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5); border-radius: 4px; cursor: pointer; font-weight: bold;">⬅ Quitter</button>
-                    <button id="dev-switch-btn" onclick="debugSwitchPlayer()" class="hidden-view" style="padding: 6px 12px; background: #8e44ad; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">🔄 Vue</button>
+                    <button onclick="leaveGameToLobby()" class="top-btn">⬅ <span class="hide-on-mobile">Quitter</span></button>
+                    <button id="dev-switch-btn" onclick="debugSwitchPlayer()" class="top-btn btn-dev hidden-view">🔄 <span class="hide-on-mobile">Vue</span></button>
                 </div>
                 <div id="turn-banner" style="margin: 0; flex-shrink: 0;"></div>
                 <div style="display: flex; gap: 5px; flex: 1; justify-content: flex-end;">
-                    <button onclick="toggleChatMenu()" style="padding: 6px 12px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5); border-radius: 4px; cursor: pointer; font-weight: bold; position: relative;">
-                        💬 Chat
+                    <button onclick="toggleChatMenu()" class="top-btn">
+                        💬 <span class="hide-on-mobile">Chat</span>
                         <span id="chat-badge-game" class="history-badge-alert hidden-view"></span>
                     </button>
-                    <button onclick="toggleHistoryMenu()" style="padding: 6px 12px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5); border-radius: 4px; cursor: pointer; font-weight: bold; position: relative;">
-                        📜 Log
+                    <button onclick="toggleHistoryMenu()" class="top-btn">
+                        📜 <span class="hide-on-mobile">Log</span>
                         <span id="history-badge" class="history-badge-alert hidden-view"></span>
                     </button>
                 </div>
@@ -66,15 +87,15 @@
             <div id="players-info-container"></div>
         </div>
 
-        <svg id="map-svg" viewBox="0 0 800 600"></svg>
-
-        <!-- Journal de bord du Fugitif -->
-        <div id="travel-log-sidebar" class="hidden-view">
-            <div class="travel-header">Traque</div>
-            <div id="travel-log-content"></div>
-        </div>
-
-        <div id="ui-bottom">
+        <!-- Conteneur adaptatif pour la carte et la sidebar -->
+        <div id="map-wrapper" style="position: relative; flex-grow: 1; width: 100%; display: flex; overflow: hidden;">
+            <svg id="map-svg" viewBox="0 0 800 600"></svg>
+    
+            <!-- Journal de bord du Fugitif -->
+            <div id="travel-log-sidebar" class="hidden-view">
+                <div class="travel-header">Traque</div>
+                <div id="travel-log-content"></div>
+            </div>
         </div>
     </div>
   
@@ -97,6 +118,7 @@
             <h3>📜 Historique d'actions</h3>
             <button class="history-close-btn" onclick="toggleHistoryMenu()">✖</button>
         </div>
+        <div id="history-filters"></div>
         <div id="history-content"></div>
     </div>
 
@@ -113,9 +135,9 @@
 
     <!-- Importation de Supabase via CDN -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="data.js?v=25"></script>
-    <script src="ui.js?v=25"></script>
-    <script src="game.js?v=25"></script>
+    <script src="data.js?v=58"></script>
+    <script src="ui.js?v=58"></script>
+    <script src="game.js?v=58"></script>
 
     <!-- NETTOYAGE COMPLET DU CACHE POUR LE DÉVELOPPEMENT -->
     <script>

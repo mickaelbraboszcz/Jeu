@@ -1,4 +1,6 @@
-// --- IDENTIFICATION DU JOUEUR ---
+/* =========================================
+   1. VARIABLES GLOBALES & ÉTAT DU JEU
+   ========================================= */
 let myPlayerId = null;
 let myPlayerName = null;
 let myAvatarUrl = null;
@@ -22,13 +24,65 @@ let gameState = {
 };
 
 let currentGameId = null;
-
 let gameChannel = null;
 let onlinePlayers = {}; // Stocke les ID des joueurs actuellement connectés
 let mySecretPosition = null; // Stockage RAM ultra-rapide de la position
 
-// --- MULTIJOUEUR SUPABASE ---
+// Variables de la Caméra
+let viewBox = { x: 0, y: 0, w: 1448, h: 1086 };
+window.isDraggingMap = false;
+let isViewBoxUpdatePending = false;
 
+
+/* =========================================
+   2. INITIALISATION & AUTHENTIFICATION
+   ========================================= */
+async function initGame() {
+    initMapGestures();
+    
+    // Activation du mode Dev si on est sur Live Server
+    if (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost') {
+        window.isDevMode = true; // Prévient ui.js qu'il peut afficher les boutons de triche
+        document.getElementById('dev-switch-btn')?.classList.remove('hidden-view');
+    }
+    
+    checkAuth();
+}
+
+async function checkAuth() {
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    
+    if (session) {
+        myPlayerId = session.user.id; // L'ID ultra-sécurisé de Supabase
+        // Récupère le nom complet Google, ou l'email par défaut
+        myPlayerName = session.user.user_metadata.full_name || session.user.email.split('@')[0];
+        myAvatarUrl = session.user.user_metadata.avatar_url || null; // Récupère la photo Google
+        
+        document.getElementById('auth-section').classList.add('hidden-view');
+        document.getElementById('lobby-actions').classList.remove('hidden-view');
+        document.getElementById('user-name-display').innerText = myPlayerName;
+        showLobby();
+    } else {
+        document.getElementById('auth-section').classList.remove('hidden-view');
+        document.getElementById('lobby-actions').classList.add('hidden-view');
+    }
+}
+
+async function loginWithGoogle() {
+    await supabaseClient.auth.signInWithOAuth({
+        provider: 'google'
+    });
+}
+
+async function logout() {
+    await supabaseClient.auth.signOut();
+    window.location.reload();
+}
+
+
+/* =========================================
+   3. SYNCHRONISATION MULTIJOUEUR (SUPABASE)
+   ========================================= */
 async function saveGameState() {
     if (!currentGameId) return;
     const { error } = await supabaseClient
@@ -108,17 +162,6 @@ function subscribeToGame(id) {
         });
 }
 
-function leaveGameToLobby() {
-    window.preventAutoReconnect = true; // Empêche l'auto-reconnexion pour cette session si le joueur a volontairement cliqué sur Quitter
-    if (gameChannel) supabaseClient.removeChannel(gameChannel);
-    gameChannel = null;
-    currentGameId = null;
-    mySecretPosition = null;
-    window.isAnimatingMove = false;
-    window.hasShownEndModal = false;
-    showLobby();
-}
-
 async function ensureFugitiveSecret() {
     if (mySecretPosition) return;
     
@@ -133,47 +176,282 @@ async function ensureFugitiveSecret() {
     }
 }
 
-// --- HISTORIQUE (LOGS) ---
 
-function addHistory(actionPayload, userId) {
-    if (!gameState.history) gameState.history = [];
+/* =========================================
+   4. GESTION DU SALON (LOBBY) & RÔLES
+   ========================================= */
+async function showLobby() {
+    document.getElementById('lobby-container').classList.remove('hidden-view');
+    document.getElementById('game-container').classList.add('hidden-view');
+    document.getElementById('waiting-room-container').classList.add('hidden-view');
+    
+    const { data, error } = await supabaseClient
+        .from('games')
+        .select('id, state, created_at')
+        .order('created_at', { ascending: false })
+        .limit(10);
 
-    if (typeof actionPayload === 'string') {
-        actionPayload = { text: actionPayload };
+    const listContainer = document.getElementById('games-list');
+    if (error || !data || data.length === 0) {
+        listContainer.innerHTML = "<i>Aucune partie en cours trouvée.</i>";
+    } else {
+        // --- AUTO-RECONNEXION ---
+        if (!window.preventAutoReconnect) {
+            const activeGame = data.find(g => g.state.users && g.state.users.some(u => u.id === myPlayerId) && g.state.status !== 'finished');
+            if (activeGame) {
+                return joinGame(activeGame.id); // Reconnecte directement et stop le chargement du lobby
+            }
+        }
+        
+        // --- FILTRAGE DES PARTIES ---
+        const visibleGames = data.filter(game => {
+            const amIInThisGame = game.state.users && game.state.users.some(u => u.id === myPlayerId);
+            const isWaiting = game.state.status === 'waiting';
+            const isNotFull = game.state.users && game.state.users.length < 5;
+            // On affiche si on est dedans, OU (si elle est en attente ET pas pleine)
+            return (amIInThisGame && game.state.status !== 'finished') || (isWaiting && isNotFull);
+        });
+        
+        if (visibleGames.length === 0) {
+            listContainer.innerHTML = "<i>Aucune partie ouverte pour le moment.</i>";
+        } else {
+            listContainer.innerHTML = visibleGames.map(game => {
+                const amIInThisGame = game.state.users.some(u => u.id === myPlayerId);
+                const nbPlayers = game.state.users.length;
+                const isPlaying = game.state.status === 'playing';
+                
+                let btnLabel = amIInThisGame ? 'Reconnecter' : (isPlaying ? 'En cours' : 'Rejoindre');
+                
+                const gameName = game.state.name || `Partie #${game.id}`;
+                const dateStr = new Date(game.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+                
+                // Calcul du "Tour" (Manche globale)
+                const nbChars = game.state.characters ? game.state.characters.length : 5;
+                const currentRound = Math.floor(((game.state.turnCount || 1) - 1) / (nbChars || 1)) + 1;
+                const isMyTurn = isPlaying && game.state.characters[game.state.currentPlayerIndex]?.userId === myPlayerId;
+
+                // Création des bulles d'initiales pour les joueurs
+                const playersHtml = game.state.users.map((u) => {
+                    const isMe = (u.id === myPlayerId);
+                    const avatarContent = u.avatarUrl ? `<img src="${u.avatarUrl}">` : u.name.substring(0, 2).toUpperCase();
+                    return `<div class="player-avatar" title="${u.name}${isMe ? ' (Vous)' : ''}">${avatarContent}</div>`;
+                }).join('');
+
+                return `
+                    <div class="game-item ${isMyTurn ? 'my-turn-highlight' : ''}">
+                        <div style="display:flex; flex-direction:column; align-items:flex-start; text-align:left; flex-grow: 1;">
+                            <div style="display:flex; align-items:center;">
+                                <strong>${gameName}</strong>
+                                ${isMyTurn ? '<span class="my-turn-badge">C\'est à vous !</span>' : ''}
+                            </div>
+                            <span style="font-size:12px; color:#bdc3c7; margin-bottom: 8px;">Créée le ${dateStr} ${isPlaying ? `- Tour n°${currentRound}` : `- En attente (${nbPlayers}/4)`}</span>
+                            <div class="avatar-container">
+                                ${playersHtml}
+                            </div>
+                        </div>
+                        <button onclick="joinGame(${game.id})">${btnLabel}</button>
+                    </div>
+                `;
+            }).join('');
+        }
+    }
+}
+
+async function createNewGame() {
+    const gameNameInput = document.getElementById('game-name-input').value.trim();
+    const gameName = gameNameInput || `Partie de ${myPlayerName}`;
+
+    gameState = {
+        name: gameName, status: 'waiting', creatorId: myPlayerId, options: { riskyMove: true },
+        turnCount: 1, history: [], chat: [], fugitiveMoves: [],
+        lastAction: null,
+        users: [{ id: myPlayerId, name: myPlayerName, avatarUrl: myAvatarUrl, lastConnection: new Date().toISOString() }],
+        roles: { fugitif: null, policiers: [null, null, null, null] },
+        characters: [], currentPlayerIndex: 0
+    };
+
+    const { data, error } = await supabaseClient
+        .from('games')
+        .insert([{ state: gameState }])
+        .select();
+
+    if (error) {
+        alert("Erreur de connexion à la base de données !");
+    } else {
+        currentGameId = data[0].id;
+        subscribeToGame(currentGameId);
+        updateUI();
+    }
+}
+
+async function joinGame(id) {
+    const { data, error } = await supabaseClient
+        .from('games')
+        .select('state')
+        .eq('id', id)
+        .single();
+
+    if (error || !data) return alert("Partie introuvable !");
+    
+    gameState = data.state;
+    currentGameId = id;
+
+    const userExists = gameState.users.find(u => u.id === myPlayerId);
+
+    if (!userExists) {
+        if (gameState.status === 'playing') return alert("La partie a déjà commencé, vous ne pouvez pas la rejoindre !");
+        if (gameState.users.length >= 5) return alert("Le salon est complet (5 joueurs max) !");
+        
+        gameState.users.push({ id: myPlayerId, name: myPlayerName, avatarUrl: myAvatarUrl, lastConnection: new Date().toISOString() });
+        
+        await supabaseClient.from('games').update({ state: gameState }).eq('id', id);
     }
 
-    gameState.history.push({
-        ...actionPayload,
-        userId: userId,
-        timestamp: new Date().toISOString()
-    });
-    // On limite l'historique aux 50 dernières actions pour éviter de surcharger la base de données
-    if (gameState.history.length > 50) gameState.history.shift();
-}
+    subscribeToGame(currentGameId);
+    
+    const myFugitive = gameState.characters?.find(c => c.userId === myPlayerId && c.role === 'fugitif');
+    if (myFugitive && gameState.status === 'playing') {
+        await ensureFugitiveSecret();
+        myFugitive.secretPosition = mySecretPosition;
+    }
 
-function sendChatMessage(event) {
-    if (event) event.preventDefault();
-    const input = document.getElementById('chat-input');
-    const text = input.value.trim();
-    if (!text) return;
-    
-    if (!gameState.chat) gameState.chat = [];
-    gameState.chat.push({
-        userId: myPlayerId,
-        text: text,
-        timestamp: new Date().toISOString()
-    });
-    if (gameState.chat.length > 50) gameState.chat.shift();
-    
-    input.value = '';
-    saveGameState();
     updateUI();
-    
-    // Remet le focus sur la barre de texte (Pratique pour taper vite)
-    setTimeout(() => input.focus(), 50);
 }
 
-// --- LOGIQUE ---
+function leaveGameToLobby() {
+    window.preventAutoReconnect = true; // Empêche l'auto-reconnexion pour cette session si le joueur a volontairement cliqué sur Quitter
+    if (gameChannel) supabaseClient.removeChannel(gameChannel);
+    gameChannel = null;
+    currentGameId = null;
+    mySecretPosition = null;
+    window.isAnimatingMove = false;
+    window.hasShownEndModal = false;
+    showLobby();
+}
+
+async function startActiveGame() {
+    if (gameState.creatorId !== myPlayerId) return; 
+    
+    if (!gameState.roles.fugitif) return alert("Quelqu'un doit incarner le Fugitif !");
+    if (gameState.roles.policiers.filter(p => p !== null).length === 0) return alert("Il faut au moins 1 Policier !");
+    
+    gameState.characters = [];
+    
+    // Mélanger les positions de départ disponibles
+    const positions = [...STARTING_POSITIONS];
+    for (let i = positions.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [positions[i], positions[j]] = [positions[j], positions[i]];
+    }
+
+    // 1. Création du Fugitif
+    const fugUser = gameState.users.find(u => u.id === gameState.roles.fugitif);
+    if (!fugUser) return alert("Erreur : Joueur Fugitif introuvable.");
+    gameState.characters.push({
+        id: 'fugitif', userId: fugUser.id, name: fugUser.name + ' (Fugitif)',
+        role: 'fugitif', color: '#e74c3c', position: null, // POSITION PUBLIQUE CACHÉE !
+        ap: 8, maxAp: 12 // Points d'Action du Fugitif
+    });
+
+    // 2. Création des Policiers
+    let pIndex = 0;
+    gameState.roles.policiers.forEach((userId, i) => {
+        if (userId) {
+            const polUser = gameState.users.find(u => u.id === userId);
+            if (!polUser) return;
+            const multiRole = gameState.roles.policiers.filter(u => u === userId).length > 1;
+            gameState.characters.push({
+                id: 'policier_' + (i+1), userId: polUser.id,
+                name: polUser.name + (multiRole ? ` (Pol. ${pIndex+1})` : ''),
+                role: 'policier', color: POLICE_COLORS[pIndex], position: positions.pop(),
+                ap: 6, maxAp: 10 // Points d'Action des Policiers
+            });
+            pIndex++;
+        }
+    });
+
+    gameState.availableStarts = positions; // On laisse les positions restantes pour que le Fugitif puisse piocher secrètement
+
+    window.hasShownEndModal = false;
+    addHistory({ text: "La traque commence dans les rues de Londres !", type: 'system', round: 0 }, myPlayerId); 
+    
+    // Log du placement initial (Tour 0)
+    gameState.characters.forEach(char => {
+        if (char.role === 'policier') {
+            addHistory({ text: "a été déployé.", type: 'spawn', target: char.position, round: 0 }, char.userId);
+        } else if (char.role === 'fugitif') {
+            addHistory({ text: "s'est caché dans la ville.", type: 'spawn', target: '?', isFugitiveSpawn: true, round: 0 }, char.userId);
+        }
+    });
+    gameState.status = 'playing'; // On lance la partie !
+    gameState.currentPlayerIndex = 0;
+    await saveGameState();
+    
+    const myFugitive = gameState.characters?.find(c => c.userId === myPlayerId && c.role === 'fugitif');
+    if (myFugitive) {
+        await ensureFugitiveSecret();
+        myFugitive.secretPosition = mySecretPosition;
+    }
+
+    updateUI();
+}
+
+async function claimRole(roleType, slotIndex = 0) {
+    const isFugitif = gameState.roles.fugitif === myPlayerId;
+    const isPolicier = gameState.roles.policiers.includes(myPlayerId);
+
+    if (roleType === 'fugitif') {
+        if (gameState.roles.fugitif) return;
+        if (isPolicier) return alert("Vous jouez déjà un Policier !");
+        gameState.roles.fugitif = myPlayerId;
+    } else if (roleType === 'policier') {
+        if (gameState.roles.policiers[slotIndex]) return;
+        if (isFugitif) return alert("Vous jouez déjà le Fugitif !");
+        gameState.roles.policiers[slotIndex] = myPlayerId;
+    }
+    await saveGameState();
+    updateUI();
+}
+
+async function unclaimRole(roleType, slotIndex = 0) {
+    let removedId = null;
+    if (roleType === 'fugitif' && (gameState.roles.fugitif === myPlayerId || (gameState.roles.fugitif && gameState.roles.fugitif.startsWith('bot_')))) {
+        removedId = gameState.roles.fugitif;
+        gameState.roles.fugitif = null;
+    } else if (roleType === 'policier' && (gameState.roles.policiers[slotIndex] === myPlayerId || (gameState.roles.policiers[slotIndex] && gameState.roles.policiers[slotIndex].startsWith('bot_')))) {
+        removedId = gameState.roles.policiers[slotIndex];
+        gameState.roles.policiers[slotIndex] = null;
+    }
+    
+    // Nettoyage complet : si on retire un bot, on l'efface aussi de la mémoire
+    if (removedId && removedId.startsWith('bot_')) {
+        gameState.users = gameState.users.filter(u => u.id !== removedId);
+    }
+    
+    await saveGameState();
+    updateUI();
+}
+
+
+/* =========================================
+   5. MOTEUR DE JEU & LOGIQUE
+   ========================================= */
+// Évalue si une station est atteignable par la police au prochain tour
+function isNodeRisky(nodeId) {
+    if (!gameState || !gameState.characters) return false;
+    const policeChars = gameState.characters.filter(c => c.role === 'policier' && c.position);
+    for (let police of policeChars) {
+        const futureAp = Math.min(police.maxAp, police.ap + 2); // Les PA que le policier aura au début de son tour
+        const canReach = MAP.links.some(l => {
+            if ((l.from === police.position && l.to === nodeId) || (l.to === police.position && l.from === nodeId)) {
+                return futureAp >= TRANSPORT[l.type].cost;
+            }
+            return false;
+        });
+        if (canReach) return true;
+    }
+    return false;
+}
 
 async function moveToNode(targetNodeId, transportType) {
     const activeChar = gameState.characters[gameState.currentPlayerIndex];
@@ -185,8 +463,11 @@ async function moveToNode(targetNodeId, transportType) {
     activeChar.ap -= transport.cost; // Déduction des PA
 
     const currentPos = activeChar.position; // Position de départ connue
+    const oldSecretPos = mySecretPosition; // On garde la position de départ pour tracer le chemin
 
     if (activeChar.role === 'fugitif') {
+        const isRisky = gameState.options?.riskyMove !== false && isNodeRisky(targetNodeId);
+
         mySecretPosition = targetNodeId;
         await supabaseClient.from('game_secrets').update({ secret_position: mySecretPosition }).eq('game_id', currentGameId).eq('fugitive_id', myPlayerId);
         activeChar.secretPosition = mySecretPosition; // Mise à jour locale
@@ -195,22 +476,32 @@ async function moveToNode(targetNodeId, transportType) {
         const isReveal = REVEAL_TURNS.includes(moveNumber);
         
         if (isReveal) {
+            gameState.lastRevealTurn = moveNumber; // On indique publiquement jusqu'à quel tour on révèle l'historique
             activeChar.position = mySecretPosition; // Révélation publique !
-            addHistory({ text: `est apparu à la station <b>${targetNodeId}</b> en <b>${transport.name}</b> !` }, myPlayerId);
+            addHistory({ text: `est apparu à la station <b>${targetNodeId}</b> en <b>${transport.name}</b> !`, type: 'move', transport: transportType, target: targetNodeId, secretTarget: targetNodeId, isReveal: true, turn: moveNumber }, myPlayerId);
         } else {
             activeChar.position = null; // Reste caché
-            addHistory({ text: `s'est déplacé secrètement en <b>${transport.name}</b>.` }, myPlayerId);
+            addHistory({ text: `s'est déplacé secrètement en <b>${transport.name}</b>.`, type: 'move', transport: transportType, target: '?', secretTarget: targetNodeId, isReveal: false, turn: moveNumber }, myPlayerId);
         }
 
         if (!gameState.fugitiveMoves) gameState.fugitiveMoves = [];
         gameState.fugitiveMoves.push({
             turn: moveNumber,
             transport: transportType,
-            position: isReveal ? targetNodeId : null
+            position: isReveal ? targetNodeId : null,
+            secretPosition: targetNodeId,
+            fromPosition: oldSecretPos
         });
+
+        // Récompense d'adrénaline !
+        if (isRisky) {
+            activeChar.maxAp += 1;
+            activeChar.ap = activeChar.maxAp;
+            addHistory({ text: `⚡ <b>Coup de maître !</b> Le Fugitif a frôlé la police : Jauge restaurée et augmentée à ${activeChar.maxAp} PA max !`, type: 'adrenaline', turn: moveNumber }, myPlayerId);
+        }
     } else {
         activeChar.position = targetNodeId;
-        addHistory({ text: `s'est déplacé à la station <b>${targetNodeId}</b> en <b>${transport.name}</b>.` }, myPlayerId);
+        addHistory({ text: `s'est déplacé à la station <b>${targetNodeId}</b> en <b>${transport.name}</b>.`, type: 'move', transport: transportType, target: targetNodeId }, myPlayerId);
         
         // On enregistre l'action pour déclencher l'animation chez les autres
         gameState.lastAction = {
@@ -231,21 +522,23 @@ function skipTurn() {
     if (activeChar.userId !== myPlayerId) return;
 
     if (activeChar.role === 'fugitif') {
+        const oldSecretPos = mySecretPosition;
         const moveNumber = (gameState.fugitiveMoves?.length || 0) + 1;
         const isReveal = REVEAL_TURNS.includes(moveNumber);
         
         if (isReveal) {
+            gameState.lastRevealTurn = moveNumber;
             activeChar.position = activeChar.secretPosition;
-            addHistory({ text: `est resté sur place et a été aperçu à la station <b>${activeChar.position}</b> !` }, myPlayerId);
+            addHistory({ text: `est resté sur place et a été aperçu à la station <b>${activeChar.position}</b> !`, type: 'skip', target: activeChar.position, secretTarget: activeChar.position, isReveal: true, turn: moveNumber }, myPlayerId);
         } else {
             activeChar.position = null;
-            addHistory({ text: `s'est reposé secrètement.` }, myPlayerId);
+            addHistory({ text: `s'est reposé secrètement.`, type: 'skip', target: '?', secretTarget: activeChar.secretPosition, isReveal: false, turn: moveNumber }, myPlayerId);
         }
 
         if (!gameState.fugitiveMoves) gameState.fugitiveMoves = [];
-        gameState.fugitiveMoves.push({ turn: moveNumber, transport: 'SKIP', position: isReveal ? activeChar.secretPosition : null });
+        gameState.fugitiveMoves.push({ turn: moveNumber, transport: 'SKIP', position: isReveal ? activeChar.secretPosition : null, secretPosition: activeChar.secretPosition, fromPosition: oldSecretPos });
     } else {
-        addHistory({ text: `a passé son tour pour reprendre son souffle.` }, myPlayerId);
+        addHistory({ text: `a passé son tour pour reprendre son souffle.`, type: 'skip' }, myPlayerId);
     }
     
     endTurn();
@@ -274,9 +567,10 @@ async function checkWinConditions() {
             const catchingPolice = gameState.characters.find(c => c.role === 'policier' && c.position === actualFugitivePos);
             if (catchingPolice) {
                 gameState.status = 'finished';
+                gameState.lastRevealTurn = 999; // On révèle tout le parcours à la fin !
                 gameState.winner = { team: 'police', reason: `Le Fugitif a été arrêté par ${catchingPolice.name} à la station ${actualFugitivePos} !` };
                 fugitive.position = actualFugitivePos; // Révélation dramatique !
-                addHistory({ text: `🚨 ARRÊTÉ par ${catchingPolice.name} ! La Police gagne !` }, fugitive.userId);
+                addHistory({ text: `🚨 ARRÊTÉ par ${catchingPolice.name} ! La Police gagne !`, type: 'catch' }, fugitive.userId);
                 await saveGameState();
                 return;
             }
@@ -287,9 +581,10 @@ async function checkWinConditions() {
         // Si le Fugitif a joué ses 24 tours et que la boucle revient à lui
         if (fugitiveMovesCount >= 24 && gameState.currentPlayerIndex === fugitiveIndex) {
             gameState.status = 'finished';
+            gameState.lastRevealTurn = 999; // On révèle tout le parcours à la fin !
             gameState.winner = { team: 'fugitif', reason: `Le Fugitif a survécu 24 tours et s'est échappé dans la nuit !` };
             fugitive.position = actualFugitivePos; 
-            addHistory({ text: `🚁 ÉCHAPPÉ ! 24 tours survécus. Le Fugitif gagne !` }, fugitive.userId);
+            addHistory({ text: `🚁 ÉCHAPPÉ ! 24 tours survécus. Le Fugitif gagne !`, type: 'escape' }, fugitive.userId);
             await saveGameState();
         }
     }
@@ -315,9 +610,56 @@ async function endTurn() {
     updateUI();
 }
 
-let viewBox = { x: 0, y: 0, w: 800, h: 600 };
-window.isDraggingMap = false;
 
+/* =========================================
+   6. CHAT & HISTORIQUE (LOGS)
+   ========================================= */
+function addHistory(actionPayload, userId) {
+    if (!gameState.history) gameState.history = [];
+
+    if (typeof actionPayload === 'string') {
+        actionPayload = { text: actionPayload, type: 'info' };
+    }
+
+    const nbChars = gameState.characters ? Math.max(1, gameState.characters.length) : 5;
+    const currentRound = Math.floor(((gameState.turnCount || 1) - 1) / nbChars) + 1;
+
+    gameState.history.push({
+        ...actionPayload,
+        userId: userId,
+        round: actionPayload.round !== undefined ? actionPayload.round : currentRound,
+        timestamp: new Date().toISOString()
+    });
+    // On limite l'historique aux 50 dernières actions pour éviter de surcharger la base de données
+    if (gameState.history.length > 50) gameState.history.shift();
+}
+
+function sendChatMessage(event) {
+    if (event) event.preventDefault();
+    const input = document.getElementById('chat-input');
+    const text = input.value.trim();
+    if (!text) return;
+    
+    if (!gameState.chat) gameState.chat = [];
+    gameState.chat.push({
+        userId: myPlayerId,
+        text: text,
+        timestamp: new Date().toISOString()
+    });
+    if (gameState.chat.length > 50) gameState.chat.shift();
+    
+    input.value = '';
+    saveGameState();
+    updateUI();
+    
+    // Remet le focus sur la barre de texte (Pratique pour taper vite)
+    setTimeout(() => input.focus(), 50);
+}
+
+
+/* =========================================
+   7. GESTION DE LA CAMÉRA (ZOOM & PAN)
+   ========================================= */
 function initMapGestures() {
     const svg = document.getElementById('map-svg');
     let pointers = [];
@@ -327,6 +669,12 @@ function initMapGestures() {
     svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
 
     svg.addEventListener('pointerdown', (e) => {
+        // Ferme la bulle de transport si on clique n'importe où ailleurs
+        if (window.currentTransportBubble && !e.target.closest('foreignObject')) {
+            window.currentTransportBubble.remove();
+            window.currentTransportBubble = null;
+        }
+        
         pointers.push({ id: e.pointerId, x: e.clientX, y: e.clientY });
         totalDragDistance = 0;
         try { e.target.setPointerCapture(e.pointerId); } catch(err) {}
@@ -420,8 +768,6 @@ function applyZoom(zoomFactor, clientX, clientY, svg) {
     }
 }
 
-let isViewBoxUpdatePending = false;
-
 function updateViewBox() {
     if (!isViewBoxUpdatePending) {
         isViewBoxUpdatePending = true;
@@ -433,46 +779,56 @@ function updateViewBox() {
     }
 }
 
-// --- SYSTÈME DE RÔLES ---
+function focusOnNode(nodeId) {
+    const node = MAP.nodes.find(n => n.id === nodeId);
+    if (!node) return;
 
-async function claimRole(roleType, slotIndex = 0) {
-    const isFugitif = gameState.roles.fugitif === myPlayerId;
-    const isPolicier = gameState.roles.policiers.includes(myPlayerId);
+    const targetW = 600; // Zoom moyen
+    const targetH = targetW * (1086 / 1448); // Ratio de la carte native
+    
+    let targetX = node.x - (targetW / 2);
+    let targetY = node.y - (targetH / 2);
 
-    if (roleType === 'fugitif') {
-        if (gameState.roles.fugitif) return;
-        if (isPolicier) return alert("Vous jouez déjà un Policier !");
-        gameState.roles.fugitif = myPlayerId;
-    } else if (roleType === 'policier') {
-        if (gameState.roles.policiers[slotIndex]) return;
-        if (isFugitif) return alert("Vous jouez déjà le Fugitif !");
-        gameState.roles.policiers[slotIndex] = myPlayerId;
+    // Empêcher de sortir des bords de la carte
+    if (targetX < 0) targetX = 0;
+    if (targetY < 0) targetY = 0;
+    if (targetX + targetW > 1448) targetX = 1448 - targetW;
+    if (targetY + targetH > 1086) targetY = 1086 - targetH;
+
+    const startX = viewBox.x;
+    const startY = viewBox.y;
+    const startW = viewBox.w;
+    const startH = viewBox.h;
+
+    const duration = 400; // 400ms d'animation fluide
+    const startTime = performance.now();
+
+    if (window.zoomAnimFrame) cancelAnimationFrame(window.zoomAnimFrame);
+
+    function animateZoom(now) {
+        let progress = (now - startTime) / duration;
+        if (progress > 1) progress = 1;
+        
+        const ease = 1 - Math.pow(1 - progress, 3); // Effet de freinage (easeOutCubic)
+
+        viewBox.x = startX + (targetX - startX) * ease;
+        viewBox.y = startY + (targetY - startY) * ease;
+        viewBox.w = startW + (targetW - startW) * ease;
+        viewBox.h = startH + (targetH - startH) * ease;
+
+        updateViewBox();
+
+        if (progress < 1) {
+            window.zoomAnimFrame = requestAnimationFrame(animateZoom);
+        }
     }
-    await saveGameState();
-    updateUI();
+    window.zoomAnimFrame = requestAnimationFrame(animateZoom);
 }
 
-async function unclaimRole(roleType, slotIndex = 0) {
-    let removedId = null;
-    if (roleType === 'fugitif' && (gameState.roles.fugitif === myPlayerId || (gameState.roles.fugitif && gameState.roles.fugitif.startsWith('bot_')))) {
-        removedId = gameState.roles.fugitif;
-        gameState.roles.fugitif = null;
-    } else if (roleType === 'policier' && (gameState.roles.policiers[slotIndex] === myPlayerId || (gameState.roles.policiers[slotIndex] && gameState.roles.policiers[slotIndex].startsWith('bot_')))) {
-        removedId = gameState.roles.policiers[slotIndex];
-        gameState.roles.policiers[slotIndex] = null;
-    }
-    
-    // Nettoyage complet : si on retire un bot, on l'efface aussi de la mémoire
-    if (removedId && removedId.startsWith('bot_')) {
-        gameState.users = gameState.users.filter(u => u.id !== removedId);
-    }
-    
-    await saveGameState();
-    updateUI();
-}
 
-// --- OUTILS DE DÉVELOPPEMENT (LOCAL UNIQUEMENT) ---
-
+/* =========================================
+   8. OUTILS DE DÉVELOPPEMENT (DEV MODE)
+   ========================================= */
 function debugSwitchPlayer() {
     if (gameState && gameState.users && gameState.users.length > 1) {
         const currentIndex = gameState.users.findIndex(u => u.id === myPlayerId);
@@ -497,246 +853,6 @@ async function debugAddBotToRole(roleType, slotIndex = 0) {
     else if (roleType === 'policier') gameState.roles.policiers[slotIndex] = dummyId;
 
     await saveGameState();
-    updateUI();
-}
-
-// --- AUTHENTIFICATION GOOGLE ---
-
-async function checkAuth() {
-    const { data: { session } } = await supabaseClient.auth.getSession();
-    
-    if (session) {
-        myPlayerId = session.user.id; // L'ID ultra-sécurisé de Supabase
-        // Récupère le nom complet Google, ou l'email par défaut
-        myPlayerName = session.user.user_metadata.full_name || session.user.email.split('@')[0];
-        myAvatarUrl = session.user.user_metadata.avatar_url || null; // Récupère la photo Google
-        
-        document.getElementById('auth-section').classList.add('hidden-view');
-        document.getElementById('lobby-actions').classList.remove('hidden-view');
-        document.getElementById('user-name-display').innerText = myPlayerName;
-        showLobby();
-    } else {
-        document.getElementById('auth-section').classList.remove('hidden-view');
-        document.getElementById('lobby-actions').classList.add('hidden-view');
-    }
-}
-
-async function loginWithGoogle() {
-    await supabaseClient.auth.signInWithOAuth({
-        provider: 'google'
-    });
-}
-
-async function logout() {
-    await supabaseClient.auth.signOut();
-    window.location.reload();
-}
-
-async function initGame() {
-    initMapGestures();
-    
-    // Activation du mode Dev si on est sur Live Server
-    if (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost') {
-        window.isDevMode = true; // Prévient ui.js qu'il peut afficher les boutons de triche
-        document.getElementById('dev-switch-btn')?.classList.remove('hidden-view');
-    }
-    
-    checkAuth();
-}
-
-async function showLobby() {
-    document.getElementById('lobby-container').classList.remove('hidden-view');
-    document.getElementById('game-container').classList.add('hidden-view');
-    document.getElementById('waiting-room-container').classList.add('hidden-view');
-    
-    const { data, error } = await supabaseClient
-        .from('games')
-        .select('id, state, created_at')
-        .order('created_at', { ascending: false })
-        .limit(10);
-
-    const listContainer = document.getElementById('games-list');
-    if (error || !data || data.length === 0) {
-        listContainer.innerHTML = "<i>Aucune partie en cours trouvée.</i>";
-    } else {
-        // --- AUTO-RECONNEXION ---
-        if (!window.preventAutoReconnect) {
-            const activeGame = data.find(g => g.state.users && g.state.users.some(u => u.id === myPlayerId) && g.state.status !== 'finished');
-            if (activeGame) {
-                return joinGame(activeGame.id); // Reconnecte directement et stop le chargement du lobby
-            }
-        }
-        
-        // --- FILTRAGE DES PARTIES ---
-        const visibleGames = data.filter(game => {
-            const amIInThisGame = game.state.users && game.state.users.some(u => u.id === myPlayerId);
-            const isWaiting = game.state.status === 'waiting';
-            const isNotFull = game.state.users && game.state.users.length < 5;
-            // On affiche si on est dedans, OU (si elle est en attente ET pas pleine)
-            return (amIInThisGame && game.state.status !== 'finished') || (isWaiting && isNotFull);
-        });
-        
-        if (visibleGames.length === 0) {
-            listContainer.innerHTML = "<i>Aucune partie ouverte pour le moment.</i>";
-        } else {
-            listContainer.innerHTML = visibleGames.map(game => {
-                const amIInThisGame = game.state.users.some(u => u.id === myPlayerId);
-                const nbPlayers = game.state.users.length;
-                const isPlaying = game.state.status === 'playing';
-                
-                let btnLabel = amIInThisGame ? 'Reconnecter' : (isPlaying ? 'En cours' : 'Rejoindre');
-                
-                const gameName = game.state.name || `Partie #${game.id}`;
-                const dateStr = new Date(game.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
-                
-                // Calcul du "Tour" (Manche globale)
-                const nbChars = game.state.characters ? game.state.characters.length : 5;
-                const currentRound = Math.floor(((game.state.turnCount || 1) - 1) / (nbChars || 1)) + 1;
-                const isMyTurn = isPlaying && game.state.characters[game.state.currentPlayerIndex]?.userId === myPlayerId;
-
-                // Création des bulles d'initiales pour les joueurs
-                const playersHtml = game.state.users.map((u) => {
-                    const isMe = (u.id === myPlayerId);
-                    const avatarContent = u.avatarUrl ? `<img src="${u.avatarUrl}" style="width:100%; height:100%; object-fit:cover;">` : u.name.substring(0, 2).toUpperCase();
-                    return `<div class="player-avatar" style="background-color: #34495e;" title="${u.name}${isMe ? ' (Vous)' : ''}">${avatarContent}</div>`;
-                }).join('');
-
-                return `
-                    <div class="game-item ${isMyTurn ? 'my-turn-highlight' : ''}">
-                        <div style="display:flex; flex-direction:column; align-items:flex-start; text-align:left; flex-grow: 1;">
-                            <div style="display:flex; align-items:center;">
-                                <strong>${gameName}</strong>
-                                ${isMyTurn ? '<span class="my-turn-badge">C\'est à vous !</span>' : ''}
-                            </div>
-                            <span style="font-size:12px; color:#bdc3c7; margin-bottom: 8px;">Créée le ${dateStr} ${isPlaying ? `- Tour n°${currentRound}` : `- En attente (${nbPlayers}/4)`}</span>
-                            <div class="avatar-container">
-                                ${playersHtml}
-                            </div>
-                        </div>
-                        <button onclick="joinGame(${game.id})">${btnLabel}</button>
-                    </div>
-                `;
-            }).join('');
-        }
-    }
-}
-
-async function createNewGame() {
-       const gameNameInput = document.getElementById('game-name-input').value.trim();
-    const gameName = gameNameInput || `Partie de ${myPlayerName}`;
-
-    gameState = {
-        name: gameName, status: 'waiting', creatorId: myPlayerId, options: {},
-        turnCount: 1, history: [], chat: [], fugitiveMoves: [],
-        lastAction: null,
-        users: [{ id: myPlayerId, name: myPlayerName, avatarUrl: myAvatarUrl, lastConnection: new Date().toISOString() }],
-        roles: { fugitif: null, policiers: [null, null, null, null] },
-        characters: [], currentPlayerIndex: 0
-    };
-
-    const { data, error } = await supabaseClient
-        .from('games')
-        .insert([{ state: gameState }])
-        .select();
-
-    if (error) {
-        alert("Erreur de connexion à la base de données !");
-    } else {
-
-        currentGameId = data[0].id;
-        
-        subscribeToGame(currentGameId);
-        updateUI();
-    }
-}
-
-async function joinGame(id) {
-    const { data, error } = await supabaseClient
-        .from('games')
-        .select('state')
-        .eq('id', id)
-        .single();
-
-    if (error || !data) return alert("Partie introuvable !");
-    
-    gameState = data.state;
-    currentGameId = id;
-
-    const userExists = gameState.users.find(u => u.id === myPlayerId);
-
-    if (!userExists) {
-        if (gameState.status === 'playing') return alert("La partie a déjà commencé, vous ne pouvez pas la rejoindre !");
-        if (gameState.users.length >= 5) return alert("Le salon est complet (5 joueurs max) !");
-        
-        gameState.users.push({ id: myPlayerId, name: myPlayerName, avatarUrl: myAvatarUrl, lastConnection: new Date().toISOString() });
-        
-        await supabaseClient.from('games').update({ state: gameState }).eq('id', id);
-    }
-
-    subscribeToGame(currentGameId);
-    
-    const myFugitive = gameState.characters?.find(c => c.userId === myPlayerId && c.role === 'fugitif');
-    if (myFugitive && gameState.status === 'playing') {
-        await ensureFugitiveSecret();
-        myFugitive.secretPosition = mySecretPosition;
-    }
-
-    updateUI();
-}
-
-async function startActiveGame() {
-    if (gameState.creatorId !== myPlayerId) return; 
-    
-    if (!gameState.roles.fugitif) return alert("Quelqu'un doit incarner le Fugitif !");
-    if (gameState.roles.policiers.filter(p => p !== null).length === 0) return alert("Il faut au moins 1 Policier !");
-    
-    gameState.characters = [];
-    
-    // Mélanger les positions de départ disponibles
-    const positions = [...STARTING_POSITIONS];
-    for (let i = positions.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [positions[i], positions[j]] = [positions[j], positions[i]];
-    }
-
-    // 1. Création du Fugitif
-    const fugUser = gameState.users.find(u => u.id === gameState.roles.fugitif);
-    gameState.characters.push({
-        id: 'fugitif', userId: fugUser.id, name: fugUser.name + ' (Fugitif)',
-        role: 'fugitif', color: '#2c3e50', position: null, // POSITION PUBLIQUE CACHÉE !
-        ap: 8, maxAp: 12 // Points d'Action du Fugitif
-    });
-
-    // 2. Création des Policiers
-    let pIndex = 0;
-    gameState.roles.policiers.forEach((userId, i) => {
-        if (userId) {
-            const polUser = gameState.users.find(u => u.id === userId);
-            const multiRole = gameState.roles.policiers.filter(u => u === userId).length > 1;
-            gameState.characters.push({
-                id: 'policier_' + (i+1), userId: polUser.id,
-                name: polUser.name + (multiRole ? ` (Pol. ${pIndex+1})` : ''),
-                role: 'policier', color: POLICE_COLORS[pIndex], position: positions.pop(),
-                ap: 6, maxAp: 10 // Points d'Action des Policiers
-            });
-            pIndex++;
-        }
-    });
-
-    gameState.availableStarts = positions; // On laisse les positions restantes pour que le Fugitif puisse piocher secrètement
-
-    window.hasShownEndModal = false;
-    addHistory({ text: "La traque commence dans les rues de Londres !" }, myPlayerId); 
-    gameState.status = 'playing'; // On lance la partie !
-    gameState.currentPlayerIndex = 0;
-    await saveGameState();
-    
-    const myFugitive = gameState.characters?.find(c => c.userId === myPlayerId && c.role === 'fugitif');
-    if (myFugitive) {
-        await ensureFugitiveSecret();
-        myFugitive.secretPosition = mySecretPosition;
-    }
-
     updateUI();
 }
 

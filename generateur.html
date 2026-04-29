@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Super Éditeur de Carte - Scotland Yard</title>
+    <style>
+        body { margin: 0; padding: 0; display: flex; height: 100vh; font-family: sans-serif; background: #2c3e50; color: white; overflow: hidden; }
+        #sidebar { width: 300px; background: #1a252f; padding: 20px; display: flex; flex-direction: column; gap: 15px; box-shadow: 2px 0 10px rgba(0,0,0,0.5); z-index: 10; }
+        #workspace { flex-grow: 1; overflow: auto; position: relative; background: #34495e; }
+        svg { background: #000; cursor: crosshair; }
+        button { padding: 10px; cursor: pointer; border: none; border-radius: 5px; font-weight: bold; font-size: 14px; transition: 0.2s; }
+        button:hover { filter: brightness(1.2); }
+        .mode-btn { background: #7f8c8d; color: white; }
+        .mode-btn.active { background: #2ecc71; box-shadow: 0 0 10px #2ecc71; }
+        #export-btn { background: #e74c3c; color: white; margin-top: auto; }
+        .info { font-size: 12px; color: #bdc3c7; line-height: 1.5; }
+        textarea { flex-grow: 1; margin-top: 10px; background: #2c3e50; color: #ecf0f1; border: 1px solid #7f8c8d; border-radius: 5px; padding: 5px; font-family: monospace; font-size: 11px; resize: none; white-space: pre; }
+    </style>
+</head>
+<body>
+
+    <div id="sidebar">
+        <h2 style="margin-top: 0; text-align: center;">Éditeur de Carte</h2>
+        
+        <div class="info"><b>1. Image de fond :</b><br>Modifie les valeurs si besoin.</div>
+        <div style="display: flex; gap: 10px;">
+            <input type="number" id="img-w" value="1448" style="width: 100%;">
+            <input type="number" id="img-h" value="1086" style="width: 100%;">
+            <button onclick="updateSize()" style="background: #3498db; color:white;">MAJ</button>
+        </div>
+
+        <div class="info"><b>2. Outils :</b><br>Choisis ce que tu veux tracer.</div>
+        <button class="mode-btn active" id="btn-node" onclick="setMode('node')">📍 1. Placer les Stations</button>
+        <button class="mode-btn" id="btn-taxi" onclick="setMode('TAXI')" style="border-left: 5px solid white;">🚕 2. Relier Taxi</button>
+        <button class="mode-btn" id="btn-bus" onclick="setMode('BUS')" style="border-left: 5px solid #555FB5;">🚌 3. Relier Bus</button>
+        <button class="mode-btn" id="btn-metro" onclick="setMode('UNDERGROUND')" style="border-left: 5px solid #e74c3c;">🚇 4. Relier Métro</button>
+
+        <button class="mode-btn" id="btn-undo" onclick="undo()" style="margin-top: 10px; background: #95a5a6; color: white;">↩ Annuler (Ctrl+Z)</button>
+
+        <div class="info" style="margin-top: 10px;"><b>3. Filtres d'affichage :</b></div>
+        <div style="display: flex; gap: 10px; font-size: 12px;">
+            <label><input type="checkbox" id="show-taxi" onchange="render()"> 🚕 Taxis</label>
+            <label><input type="checkbox" id="show-bus" checked onchange="render()"> 🚌 Bus</label>
+            <label><input type="checkbox" id="show-metro" checked onchange="render()"> 🚇 Métro</label>
+        </div>
+
+        <div class="info" id="instructions" style="color: #f1c40f;"><b>Mode Station :</b> Clique sur la carte pour ajouter une station.</div>
+
+        <button id="export-btn" onclick="exportData()">📦 Générer le code data.js</button>
+        <textarea id="output"></textarea>
+    </div>
+
+    <div id="workspace">
+        <svg id="map" width="1448" height="1086">
+            <image href="Images/Fond.png" width="1448" height="1086" id="bg-image" style="opacity: 0.5;"></image>
+            <g id="links-layer"></g>
+            <g id="nodes-layer"></g>
+            <g id="handles-layer"></g> <!-- Les points de contrôle pour courber les lignes -->
+        </svg>
+    </div>
+
+    <script>
+        const svg = document.getElementById('map');
+        const nodesLayer = document.getElementById('nodes-layer');
+        const linksLayer = document.getElementById('links-layer');
+        const handlesLayer = document.getElementById('handles-layer');
+
+        let mode = 'node'; // 'node', 'TAXI', 'BUS', 'UNDERGROUND'
+        let nodes = [
+            { id: 1, x: 200, y: 69 }, { id: 2, x: 446, y: 50 }, { id: 3, x: 607, y: 53 }, { id: 4, x: 706, y: 45 },
+            { id: 5, x: 1091, y: 58 }, { id: 6, x: 1213, y: 57 }, { id: 7, x: 1330, y: 66 }, { id: 8, x: 143, y: 126 },
+            { id: 9, x: 243, y: 128 }, { id: 10, x: 526, y: 121 }, { id: 11, x: 601, y: 134 }, { id: 12, x: 662, y: 120 },
+            { id: 13, x: 774, y: 115 }, { id: 14, x: 889, y: 91 }, { id: 15, x: 1005, y: 82 }, { id: 16, x: 1116, y: 123 },
+            { id: 17, x: 1322, y: 158 }, { id: 18, x: 89, y: 172 }, { id: 19, x: 183, y: 180 }, { id: 20, x: 296, y: 153 },
+            { id: 21, x: 416, y: 201 }, { id: 22, x: 606, y: 218 }, { id: 23, x: 698, y: 168 }, { id: 24, x: 842, y: 174 },
+            { id: 25, x: 904, y: 190 }, { id: 26, x: 996, y: 121 }, { id: 27, x: 1012, y: 176 }, { id: 28, x: 1054, y: 155 },
+            { id: 29, x: 1212, y: 188 }, { id: 30, x: 1364, y: 179 }, { id: 31, x: 129, y: 214 }, { id: 32, x: 264, y: 246 },
+            { id: 33, x: 363, y: 228 }, { id: 34, x: 535, y: 246 }, { id: 35, x: 635, y: 270 }, { id: 36, x: 677, y: 274 },
+            { id: 37, x: 737, y: 220 }, { id: 38, x: 872, y: 225 }, { id: 39, x: 932, y: 215 }, { id: 40, x: 1038, y: 261 },
+            { id: 41, x: 1082, y: 241 }, { id: 42, x: 1327, y: 240 }, { id: 43, x: 66, y: 265 }, { id: 44, x: 200, y: 291 },
+            { id: 45, x: 299, y: 307 }, { id: 46, x: 382, y: 282 }, { id: 47, x: 446, y: 264 }, { id: 48, x: 553, y: 312 },
+            { id: 49, x: 712, y: 314 }, { id: 50, x: 777, y: 272 }, { id: 51, x: 910, y: 286 }, { id: 52, x: 977, y: 268 },
+            { id: 53, x: 1050, y: 310 }, { id: 54, x: 1100, y: 294 }, { id: 55, x: 1217, y: 291 }, { id: 56, x: 1374, y: 304 },
+            { id: 57, x: 110, y: 316 }, { id: 58, x: 242, y: 331 }, { id: 59, x: 266, y: 362 }, { id: 60, x: 318, y: 354 },
+            { id: 61, x: 406, y: 367 }, { id: 62, x: 451, y: 352 }, { id: 63, x: 566, y: 408 }, { id: 64, x: 634, y: 396 },
+            { id: 65, x: 706, y: 382 }, { id: 66, x: 748, y: 372 }, { id: 67, x: 827, y: 357 }, { id: 68, x: 919, y: 338 },
+            { id: 69, x: 1004, y: 331 }, { id: 70, x: 1105, y: 348 }, { id: 71, x: 1202, y: 350 }, { id: 72, x: 1301, y: 358 },
+            { id: 73, x: 110, y: 370 }, { id: 74, x: 157, y: 422 }, { id: 75, x: 222, y: 404 }, { id: 76, x: 302, y: 403 },
+            { id: 77, x: 356, y: 450 }, { id: 78, x: 426, y: 436 }, { id: 79, x: 475, y: 427 }, { id: 80, x: 586, y: 450 },
+            { id: 81, x: 684, y: 464 }, { id: 82, x: 722, y: 440 }, { id: 83, x: 810, y: 424 }, { id: 84, x: 873, y: 398 },
+            { id: 85, x: 926, y: 378 }, { id: 86, x: 1018, y: 413 }, { id: 87, x: 1114, y: 438 }, { id: 88, x: 1158, y: 446 },
+            { id: 89, x: 1196, y: 414 }, { id: 90, x: 1262, y: 414 }, { id: 91, x: 1361, y: 418 }, { id: 92, x: 78, y: 473 },
+            { id: 93, x: 86, y: 509 }, { id: 94, x: 166, y: 492 }, { id: 95, x: 208, y: 483 }, { id: 96, x: 409, y: 508 },
+            { id: 97, x: 443, y: 498 }, { id: 98, x: 501, y: 477 }, { id: 99, x: 558, y: 484 }, { id: 100, x: 650, y: 514 },
+            { id: 101, x: 742, y: 480 }, { id: 102, x: 863, y: 432 }, { id: 103, x: 939, y: 420 }, { id: 104, x: 1018, y: 458 },
+            { id: 105, x: 1236, y: 474 }, { id: 106, x: 1319, y: 486 }, { id: 107, x: 1382, y: 488 }, { id: 108, x: 1217, y: 568 },
+            { id: 109, x: 466, y: 580 }, { id: 110, x: 534, y: 518 }, { id: 111, x: 574, y: 562 }, { id: 112, x: 599, y: 546 },
+            { id: 113, x: 690, y: 552 }, { id: 114, x: 754, y: 529 }, { id: 115, x: 861, y: 496 }, { id: 116, x: 1021, y: 551 },
+            { id: 117, x: 1130, y: 593 }, { id: 118, x: 1022, y: 617 }, { id: 119, x: 1355, y: 637 }, { id: 120, x: 75, y: 677 },
+            { id: 121, x: 122, y: 678 }, { id: 122, x: 190, y: 674 }, { id: 123, x: 357, y: 670 }, { id: 124, x: 451, y: 649 },
+            { id: 125, x: 630, y: 591 }, { id: 126, x: 800, y: 561 }, { id: 127, x: 926, y: 590 }, { id: 128, x: 1087, y: 778 },
+            { id: 129, x: 1122, y: 630 }, { id: 130, x: 598, y: 658 }, { id: 131, x: 651, y: 619 }, { id: 132, x: 758, y: 617 },
+            { id: 133, x: 877, y: 674 }, { id: 134, x: 964, y: 646 }, { id: 135, x: 1164, y: 666 }, { id: 136, x: 1323, y: 728 },
+            { id: 137, x: 298, y: 727 }, { id: 138, x: 482, y: 690 }, { id: 139, x: 592, y: 695 }, { id: 140, x: 757, y: 682 },
+            { id: 141, x: 910, y: 697 }, { id: 142, x: 1022, y: 718 }, { id: 143, x: 1124, y: 703 }, { id: 144, x: 91, y: 794 },
+            { id: 145, x: 138, y: 790 }, { id: 146, x: 203, y: 786 }, { id: 147, x: 250, y: 774 }, { id: 148, x: 318, y: 764 },
+            { id: 149, x: 375, y: 756 }, { id: 150, x: 439, y: 730 }, { id: 151, x: 470, y: 766 }, { id: 152, x: 517, y: 733 },
+            { id: 153, x: 542, y: 772 }, { id: 154, x: 658, y: 745 }, { id: 155, x: 697, y: 795 }, { id: 156, x: 774, y: 796 },
+            { id: 157, x: 839, y: 800 }, { id: 158, x: 948, y: 756 }, { id: 159, x: 953, y: 906 }, { id: 160, x: 1170, y: 796 },
+            { id: 161, x: 1261, y: 787 }, { id: 162, x: 1390, y: 789 }, { id: 163, x: 197, y: 822 }, { id: 164, x: 266, y: 822 },
+            { id: 165, x: 391, y: 842 }, { id: 166, x: 525, y: 814 }, { id: 167, x: 630, y: 834 }, { id: 168, x: 668, y: 861 },
+            { id: 169, x: 770, y: 850 }, { id: 170, x: 830, y: 858 }, { id: 171, x: 1237, y: 1004 }, { id: 172, x: 1054, y: 851 },
+            { id: 173, x: 1195, y: 895 }, { id: 174, x: 1313, y: 860 }, { id: 175, x: 1375, y: 909 }, { id: 176, x: 70, y: 887 },
+            { id: 177, x: 125, y: 876 }, { id: 178, x: 225, y: 867 }, { id: 179, x: 342, y: 879 }, { id: 180, x: 415, y: 897 },
+            { id: 181, x: 491, y: 876 }, { id: 182, x: 527, y: 886 }, { id: 183, x: 598, y: 855 }, { id: 184, x: 732, y: 909 },
+            { id: 185, x: 808, y: 962 }, { id: 186, x: 894, y: 944 }, { id: 187, x: 1018, y: 914 }, { id: 188, x: 1143, y: 917 },
+            { id: 189, x: 126, y: 966 }, { id: 190, x: 185, y: 1002 }, { id: 191, x: 264, y: 938 }, { id: 192, x: 282, y: 1022 },
+            { id: 193, x: 467, y: 947 }, { id: 194, x: 490, y: 974 }, { id: 195, x: 546, y: 971 }, { id: 196, x: 627, y: 928 },
+            { id: 197, x: 639, y: 985 }, { id: 198, x: 950, y: 1031 }, { id: 199, x: 1159, y: 1025 }
+        ];
+        let links = [
+            { from: 1, to: 9, type: "TAXI", svgPath: "M 200 69 C 214 88, 228 108, 243 128" },
+            { from: 1, to: 8, type: "TAXI", svgPath: "M 200 69 C 181 88, 162 107, 143 126" },
+            { from: 9, to: 20, type: "TAXI", svgPath: "M 243 128 C 260 136, 279 177, 296 153" },
+            { from: 20, to: 2, type: "TAXI", svgPath: "M 296 153 C 250 81, 351 33, 446 50" },
+            { from: 2, to: 10, type: "TAXI", svgPath: "M 446 50 C 552 34, 508 107, 526 121" },
+            { from: 21, to: 10, type: "TAXI", svgPath: "M 416 201 C 455 162, 515 148, 526 121" },
+            { from: 33, to: 21, type: "TAXI", svgPath: "M 363 228 C 394 246, 475 286, 416 201" },
+            { from: 8, to: 19, type: "TAXI", svgPath: "M 143 126 C 156 144, 169 162, 183 180" },
+            { from: 19, to: 9, type: "TAXI", svgPath: "M 183 180 C 203 163, 223 146, 243 128" },
+            { from: 19, to: 32, type: "TAXI", svgPath: "M 183 180 C 210 202, 236 224, 264 246" },
+            { from: 32, to: 44, type: "TAXI", svgPath: "M 264 246 C 233 236, 222 276, 200 291" },
+            { from: 44, to: 31, type: "TAXI", svgPath: "M 200 291 C 177 266, 153 240, 129 214" },
+            { from: 31, to: 18, type: "TAXI", svgPath: "M 129 214 C 116 200, 103 186, 89 172" },
+            { from: 18, to: 8, type: "TAXI", svgPath: "M 89 172 C 107 157, 125 142, 143 126" },
+            { from: 18, to: 43, type: "TAXI", svgPath: "M 89 172 C 67 194, 47 222, 66 265" },
+            { from: 43, to: 31, type: "TAXI", svgPath: "M 66 265 C 87 248, 108 231, 129 214" },
+            { from: 43, to: 57, type: "TAXI", svgPath: "M 66 265 C 81 282, 95 299, 110 316" },
+            { from: 57, to: 73, type: "TAXI", svgPath: "M 110 316 C 110 334, 166 325, 110 370" },
+            { from: 73, to: 92, type: "TAXI", svgPath: "M 110 370 C 97 404, 51 408, 78 473" },
+            { from: 92, to: 74, type: "TAXI", svgPath: "M 78 473 C 109 462, 130 439, 157 422" },
+            { from: 74, to: 73, type: "TAXI", svgPath: "M 157 422 C 141 405, 126 388, 110 370" },
+            { from: 74, to: 58, type: "TAXI", svgPath: "M 157 422 C 185 392, 244 366, 242 331" },
+            { from: 57, to: 58, type: "TAXI", svgPath: "M 110 316 C 154 321, 197 326, 242 331" },
+            { from: 44, to: 58, type: "TAXI", svgPath: "M 200 291 C 214 304, 228 317, 242 331" },
+            { from: 58, to: 45, type: "TAXI", svgPath: "M 242 331 C 261 323, 280 315, 299 307" },
+            { from: 45, to: 32, type: "TAXI", svgPath: "M 299 307 C 291 282, 282 262, 264 246" },
+            { from: 32, to: 33, type: "TAXI", svgPath: "M 264 246 C 293 227, 323 219, 363 228" },
+            { from: 20, to: 33, type: "TAXI", svgPath: "M 296 153 C 330 172, 351 197, 363 228" },
+            { from: 33, to: 46, type: "TAXI", svgPath: "M 363 228 C 369 246, 376 264, 382 282" },
+            { from: 58, to: 59, type: "TAXI", svgPath: "M 242 331 C 250 341, 258 351, 266 362" },
+            { from: 59, to: 45, type: "TAXI", svgPath: "M 266 362 C 277 344, 282 318, 299 307" },
+            { from: 75, to: 59, type: "TAXI", svgPath: "M 222 404 C 237 390, 251 376, 266 362" },
+            { from: 74, to: 75, type: "TAXI", svgPath: "M 157 422 C 178 416, 200 368, 222 404" },
+            { from: 58, to: 75, type: "TAXI", svgPath: "M 242 331 C 235 355, 183 381, 222 404" },
+            { from: 75, to: 94, type: "TAXI", svgPath: "M 222 404 C 204 433, 162 437, 166 492" },
+            { from: 92, to: 93, type: "TAXI", svgPath: "M 78 473 C 81 485, 83 497, 86 509" },
+            { from: 93, to: 94, type: "TAXI", svgPath: "M 86 509 C 112 503, 139 498, 166 492" },
+            { from: 94, to: 95, type: "TAXI", svgPath: "M 166 492 C 180 489, 194 486, 208 483" },
+            { from: 95, to: 77, type: "TAXI", svgPath: "M 208 483 C 257 472, 306 461, 356 450" },
+            { from: 77, to: 76, type: "TAXI", svgPath: "M 356 450 C 338 434, 320 419, 302 403" },
+            { from: 76, to: 59, type: "TAXI", svgPath: "M 302 403 C 290 389, 278 376, 266 362" },
+            { from: 76, to: 61, type: "TAXI", svgPath: "M 302 403 C 336 391, 366 382, 406 367" },
+            { from: 60, to: 61, type: "TAXI", svgPath: "M 318 354 C 398 312, 354 406, 406 367" },
+            { from: 60, to: 76, type: "TAXI", svgPath: "M 318 354 C 313 370, 358 398, 302 403" },
+            { from: 45, to: 46, type: "TAXI", svgPath: "M 299 307 C 326 299, 354 291, 382 282" },
+            { from: 46, to: 47, type: "TAXI", svgPath: "M 382 282 C 403 276, 424 270, 446 264" },
+            { from: 61, to: 46, type: "TAXI", svgPath: "M 406 367 C 398 339, 390 311, 382 282" },
+            { from: 78, to: 61, type: "TAXI", svgPath: "M 426 436 C 419 413, 413 390, 406 367" },
+            { from: 78, to: 77, type: "TAXI", svgPath: "M 426 436 C 403 441, 380 445, 356 450" },
+            { from: 77, to: 96, type: "TAXI", svgPath: "M 356 450 C 396 453, 391 488, 409 508" },
+            { from: 96, to: 97, type: "TAXI", svgPath: "M 409 508 C 420 505, 431 501, 443 498" },
+            { from: 78, to: 97, type: "TAXI", svgPath: "M 426 436 C 432 456, 437 477, 443 498" },
+            { from: 96, to: 109, type: "TAXI", svgPath: "M 409 508 C 428 532, 447 556, 466 580" },
+            { from: 97, to: 109, type: "TAXI", svgPath: "M 443 498 C 451 525, 458 552, 466 580" },
+            { from: 109, to: 124, type: "TAXI", svgPath: "M 466 580 C 461 603, 482 637, 451 649" },
+            { from: 124, to: 123, type: "TAXI", svgPath: "M 451 649 C 426 664, 396 670, 357 670" },
+            { from: 123, to: 122, type: "TAXI", svgPath: "M 357 670 C 302 671, 247 673, 190 674" },
+            { from: 122, to: 95, type: "TAXI", svgPath: "M 190 674 C 182 606, 289 568, 208 483" },
+            { from: 122, to: 121, type: "TAXI", svgPath: "M 190 674 C 168 675, 145 677, 122 678" },
+            { from: 121, to: 120, type: "TAXI", svgPath: "M 122 678 C 106 678, 91 677, 75 677" },
+            { from: 120, to: 144, type: "TAXI", svgPath: "M 75 677 C 80 716, 74 755, 91 794" },
+            { from: 144, to: 145, type: "TAXI", svgPath: "M 91 794 C 107 793, 122 791, 138 790" },
+            { from: 145, to: 121, type: "TAXI", svgPath: "M 138 790 C 133 753, 127 716, 122 678" },
+            { from: 145, to: 146, type: "TAXI", svgPath: "M 138 790 C 159 789, 181 787, 203 786" },
+            { from: 146, to: 122, type: "TAXI", svgPath: "M 203 786 C 199 749, 194 712, 190 674" },
+            { from: 146, to: 147, type: "TAXI", svgPath: "M 203 786 C 219 782, 234 778, 250 774" },
+            { from: 147, to: 137, type: "TAXI", svgPath: "M 250 774 C 266 758, 282 743, 298 727" },
+            { from: 137, to: 123, type: "TAXI", svgPath: "M 298 727 C 317 708, 337 689, 357 670" },
+            { from: 144, to: 177, type: "TAXI", svgPath: "M 91 794 C 98 830, 113 848, 125 876" },
+            { from: 163, to: 177, type: "TAXI", svgPath: "M 197 822 C 173 840, 149 858, 125 876" },
+            { from: 177, to: 176, type: "TAXI", svgPath: "M 125 876 C 107 880, 89 883, 70 887" },
+            { from: 176, to: 189, type: "TAXI", svgPath: "M 70 887 C 106 903, 97 948, 126 966" },
+            { from: 189, to: 190, type: "TAXI", svgPath: "M 126 966 C 93 1008, 172 1051, 185 1002" },
+            { from: 190, to: 192, type: "TAXI", svgPath: "M 185 1002 C 206 1080, 247 1025, 282 1022" },
+            { from: 190, to: 191, type: "TAXI", svgPath: "M 185 1002 C 211 981, 237 960, 264 938" },
+            { from: 189, to: 178, type: "TAXI", svgPath: "M 126 966 C 159 933, 191 901, 225 867" },
+            { from: 191, to: 178, type: "TAXI", svgPath: "M 264 938 C 251 915, 238 891, 225 867" },
+            { from: 192, to: 191, type: "TAXI", svgPath: "M 282 1022 C 276 994, 238 966, 264 938" },
+            { from: 191, to: 179, type: "TAXI", svgPath: "M 264 938 C 290 919, 315 899, 342 879" },
+            { from: 179, to: 164, type: "TAXI", svgPath: "M 342 879 C 317 860, 292 841, 266 822" },
+            { from: 178, to: 164, type: "TAXI", svgPath: "M 225 867 C 239 852, 252 837, 266 822" },
+            { from: 164, to: 147, type: "TAXI", svgPath: "M 266 822 C 261 806, 255 790, 250 774" },
+            { from: 164, to: 148, type: "TAXI", svgPath: "M 266 822 C 283 803, 300 784, 318 764" },
+            { from: 148, to: 149, type: "TAXI", svgPath: "M 318 764 C 337 761, 356 759, 375 756" },
+            { from: 148, to: 123, type: "TAXI", svgPath: "M 318 764 C 331 733, 356 706, 357 670" },
+            { from: 149, to: 123, type: "TAXI", svgPath: "M 375 756 C 369 728, 363 699, 357 670" },
+            { from: 149, to: 165, type: "TAXI", svgPath: "M 375 756 C 380 784, 386 813, 391 842" },
+            { from: 165, to: 179, type: "TAXI", svgPath: "M 391 842 C 375 854, 359 866, 342 879" },
+            { from: 180, to: 165, type: "TAXI", svgPath: "M 415 897 C 392 887, 399 861, 391 842" },
+            { from: 180, to: 193, type: "TAXI", svgPath: "M 415 897 C 432 914, 449 930, 467 947" },
+            { from: 192, to: 194, type: "TAXI", svgPath: "M 282 1022 C 351 1006, 419 990, 490 974" },
+            { from: 193, to: 194, type: "TAXI", svgPath: "M 467 947 C 475 956, 482 965, 490 974" },
+            { from: 149, to: 150, type: "TAXI", svgPath: "M 375 756 C 396 747, 430 752, 439 730" },
+            { from: 150, to: 138, type: "TAXI", svgPath: "M 439 730 C 453 717, 467 704, 482 690" },
+            { from: 138, to: 124, type: "TAXI", svgPath: "M 482 690 C 472 676, 462 663, 451 649" },
+            { from: 152, to: 138, type: "TAXI", svgPath: "M 517 733 C 505 719, 494 705, 482 690" },
+            { from: 151, to: 152, type: "TAXI", svgPath: "M 470 766 C 486 755, 501 744, 517 733" },
+            { from: 151, to: 150, type: "TAXI", svgPath: "M 470 766 C 460 754, 450 742, 439 730" },
+            { from: 151, to: 165, type: "TAXI", svgPath: "M 470 766 C 449 798, 424 818, 391 842" },
+            { from: 151, to: 166, type: "TAXI", svgPath: "M 470 766 C 488 782, 506 798, 525 814" },
+            { from: 166, to: 153, type: "TAXI", svgPath: "M 525 814 C 531 800, 536 786, 542 772" },
+            { from: 153, to: 152, type: "TAXI", svgPath: "M 542 772 C 529 765, 523 750, 517 733" },
+            { from: 166, to: 181, type: "TAXI", svgPath: "M 525 814 C 514 834, 503 855, 491 876" },
+            { from: 181, to: 180, type: "TAXI", svgPath: "M 491 876 C 460 873, 441 881, 415 897" },
+            { from: 181, to: 193, type: "TAXI", svgPath: "M 491 876 C 483 899, 475 923, 467 947" },
+            { from: 181, to: 182, type: "TAXI", svgPath: "M 491 876 C 503 879, 515 883, 527 886" },
+            { from: 182, to: 195, type: "TAXI", svgPath: "M 527 886 C 533 914, 540 942, 546 971" },
+            { from: 195, to: 194, type: "TAXI", svgPath: "M 546 971 C 528 972, 509 973, 490 974" },
+            { from: 195, to: 197, type: "TAXI", svgPath: "M 546 971 C 575 985, 607 980, 639 985" },
+            { from: 197, to: 184, type: "TAXI", svgPath: "M 639 985 C 677 975, 718 972, 732 909" },
+            { from: 197, to: 196, type: "TAXI", svgPath: "M 639 985 C 635 966, 631 947, 627 928" },
+            { from: 196, to: 184, type: "TAXI", svgPath: "M 627 928 C 658 913, 694 905, 732 909" },
+            { from: 196, to: 183, type: "TAXI", svgPath: "M 627 928 C 617 904, 616 871, 598 855" },
+            { from: 182, to: 183, type: "TAXI", svgPath: "M 527 886 C 550 876, 574 866, 598 855" },
+            { from: 183, to: 166, type: "TAXI", svgPath: "M 598 855 C 574 841, 550 828, 525 814" },
+            { from: 167, to: 183, type: "TAXI", svgPath: "M 630 834 C 619 841, 609 848, 598 855" },
+            { from: 167, to: 168, type: "TAXI", svgPath: "M 630 834 C 643 843, 655 852, 668 861" },
+            { from: 168, to: 184, type: "TAXI", svgPath: "M 668 861 C 689 877, 710 893, 732 909" },
+            { from: 184, to: 169, type: "TAXI", svgPath: "M 732 909 C 745 890, 766 874, 770 850" },
+            { from: 168, to: 155, type: "TAXI", svgPath: "M 668 861 C 678 839, 685 822, 697 795" },
+            { from: 156, to: 169, type: "TAXI", svgPath: "M 774 796 C 773 814, 771 832, 770 850" },
+            { from: 156, to: 155, type: "TAXI", svgPath: "M 774 796 C 749 796, 723 795, 697 795" },
+            { from: 167, to: 155, type: "TAXI", svgPath: "M 630 834 C 658 759, 681 845, 697 795" },
+            { from: 155, to: 154, type: "TAXI", svgPath: "M 697 795 C 689 769, 671 762, 658 745" },
+            { from: 167, to: 153, type: "TAXI", svgPath: "M 630 834 C 600 789, 582 775, 542 772" },
+            { from: 154, to: 153, type: "TAXI", svgPath: "M 658 745 C 625 762, 588 774, 542 772" },
+            { from: 154, to: 140, type: "TAXI", svgPath: "M 658 745 C 691 724, 723 703, 757 682" },
+            { from: 140, to: 156, type: "TAXI", svgPath: "M 757 682 C 757 726, 768 757, 774 796" },
+            { from: 153, to: 139, type: "TAXI", svgPath: "M 542 772 C 559 747, 565 710, 592 695" },
+            { from: 139, to: 154, type: "TAXI", svgPath: "M 592 695 C 623 707, 645 719, 658 745" },
+            { from: 139, to: 140, type: "TAXI", svgPath: "M 592 695 C 641 678, 697 645, 757 682" },
+            { from: 130, to: 139, type: "TAXI", svgPath: "M 598 658 C 596 670, 594 682, 592 695" },
+            { from: 124, to: 130, type: "TAXI", svgPath: "M 451 649 C 500 646, 547 645, 598 658" },
+            { from: 130, to: 131, type: "TAXI", svgPath: "M 598 658 C 615 645, 633 632, 651 619" },
+            { from: 131, to: 114, type: "TAXI", svgPath: "M 651 619 C 685 589, 749 562, 754 529" },
+            { from: 132, to: 140, type: "TAXI", svgPath: "M 758 617 C 758 638, 757 660, 757 682" },
+            { from: 132, to: 114, type: "TAXI", svgPath: "M 758 617 C 757 588, 746 568, 754 529" },
+            { from: 140, to: 126, type: "TAXI", svgPath: "M 757 682 C 807 651, 785 602, 800 561" },
+            { from: 126, to: 114, type: "TAXI", svgPath: "M 800 561 C 785 550, 754 563, 754 529" },
+            { from: 124, to: 111, type: "TAXI", svgPath: "M 451 649 C 492 620, 532 592, 574 562" },
+            { from: 111, to: 110, type: "TAXI", svgPath: "M 574 562 C 561 547, 548 533, 534 518" },
+            { from: 110, to: 109, type: "TAXI", svgPath: "M 534 518 C 549 586, 489 559, 466 580" },
+            { from: 131, to: 125, type: "TAXI", svgPath: "M 651 619 C 644 610, 637 601, 630 591" },
+            { from: 125, to: 112, type: "TAXI", svgPath: "M 630 591 C 620 576, 599 568, 599 546" },
+            { from: 125, to: 113, type: "TAXI", svgPath: "M 630 591 C 650 578, 670 565, 690 552" },
+            { from: 113, to: 114, type: "TAXI", svgPath: "M 690 552 C 711 544, 736 519, 754 529" },
+            { from: 113, to: 100, type: "TAXI", svgPath: "M 690 552 C 677 539, 664 527, 650 514" },
+            { from: 100, to: 112, type: "TAXI", svgPath: "M 650 514 C 633 525, 616 535, 599 546" },
+            { from: 112, to: 111, type: "TAXI", svgPath: "M 599 546 C 591 551, 583 557, 574 562" },
+            { from: 112, to: 99, type: "TAXI", svgPath: "M 599 546 C 585 526, 572 505, 558 484" },
+            { from: 99, to: 110, type: "TAXI", svgPath: "M 558 484 C 550 495, 531 496, 534 518" },
+            { from: 110, to: 98, type: "TAXI", svgPath: "M 534 518 C 523 504, 500 495, 501 477" },
+            { from: 99, to: 98, type: "TAXI", svgPath: "M 558 484 C 541 447, 520 479, 501 477" },
+            { from: 98, to: 97, type: "TAXI", svgPath: "M 501 477 C 482 484, 463 491, 443 498" },
+            { from: 98, to: 79, type: "TAXI", svgPath: "M 501 477 C 492 461, 484 444, 475 427" },
+            { from: 79, to: 78, type: "TAXI", svgPath: "M 475 427 C 459 430, 443 433, 426 436" },
+            { from: 79, to: 62, type: "TAXI", svgPath: "M 475 427 C 458 402, 459 378, 451 352" },
+            { from: 61, to: 62, type: "TAXI", svgPath: "M 406 367 C 421 362, 436 357, 451 352" },
+            { from: 62, to: 47, type: "TAXI", svgPath: "M 451 352 C 449 323, 433 306, 446 264" },
+            { from: 99, to: 80, type: "TAXI", svgPath: "M 558 484 C 567 473, 576 462, 586 450" },
+            { from: 80, to: 100, type: "TAXI", svgPath: "M 586 450 C 607 471, 615 499, 650 514" },
+            { from: 100, to: 81, type: "TAXI", svgPath: "M 650 514 C 661 498, 662 476, 684 464" },
+            { from: 81, to: 82, type: "TAXI", svgPath: "M 684 464 C 697 456, 709 448, 722 440" },
+            { from: 100, to: 101, type: "TAXI", svgPath: "M 650 514 C 680 503, 711 492, 742 480" },
+            { from: 101, to: 114, type: "TAXI", svgPath: "M 742 480 C 746 496, 750 512, 754 529" },
+            { from: 101, to: 82, type: "TAXI", svgPath: "M 742 480 C 728 471, 728 457, 722 440" },
+            { from: 65, to: 82, type: "TAXI", svgPath: "M 706 382 C 711 401, 717 420, 722 440" },
+            { from: 82, to: 66, type: "TAXI", svgPath: "M 722 440 C 731 418, 753 402, 748 372" },
+            { from: 66, to: 65, type: "TAXI", svgPath: "M 748 372 C 734 375, 720 379, 706 382" },
+            { from: 81, to: 64, type: "TAXI", svgPath: "M 684 464 C 659 451, 651 419, 634 396" },
+            { from: 65, to: 64, type: "TAXI", svgPath: "M 706 382 C 682 387, 658 391, 634 396" },
+            { from: 64, to: 63, type: "TAXI", svgPath: "M 634 396 C 612 400, 589 404, 566 408" },
+            { from: 80, to: 63, type: "TAXI", svgPath: "M 586 450 C 579 436, 573 422, 566 408" },
+            { from: 63, to: 79, type: "TAXI", svgPath: "M 566 408 C 536 414, 506 421, 475 427" },
+            { from: 63, to: 48, type: "TAXI", svgPath: "M 566 408 C 556 379, 578 347, 553 312" },
+            { from: 48, to: 62, type: "TAXI", svgPath: "M 553 312 C 519 325, 474 333, 451 352" },
+            { from: 47, to: 34, type: "TAXI", svgPath: "M 446 264 C 475 258, 505 252, 535 246" },
+            { from: 34, to: 48, type: "TAXI", svgPath: "M 535 246 C 541 268, 547 290, 553 312" },
+            { from: 48, to: 35, type: "TAXI", svgPath: "M 553 312 C 591 304, 611 290, 635 270" },
+            { from: 34, to: 22, type: "TAXI", svgPath: "M 535 246 C 558 237, 582 228, 606 218" },
+            { from: 22, to: 35, type: "TAXI", svgPath: "M 606 218 C 616 235, 625 252, 635 270" },
+            { from: 35, to: 65, type: "TAXI", svgPath: "M 635 270 C 658 307, 682 344, 706 382" },
+            { from: 10, to: 34, type: "TAXI", svgPath: "M 526 121 C 541 166, 532 204, 535 246" },
+            { from: 10, to: 11, type: "TAXI", svgPath: "M 526 121 C 551 125, 576 130, 601 134" },
+            { from: 11, to: 22, type: "TAXI", svgPath: "M 601 134 C 603 162, 604 189, 606 218" },
+            { from: 11, to: 3, type: "TAXI", svgPath: "M 601 134 C 603 107, 582 62, 607 53" },
+            { from: 3, to: 12, type: "TAXI", svgPath: "M 607 53 C 625 75, 643 97, 662 120" },
+            { from: 3, to: 4, type: "TAXI", svgPath: "M 607 53 C 644 84, 669 36, 706 45" },
+            { from: 4, to: 13, type: "TAXI", svgPath: "M 706 45 C 733 61, 762 79, 774 115" },
+            { from: 12, to: 23, type: "TAXI", svgPath: "M 662 120 C 674 136, 686 152, 698 168" },
+            { from: 23, to: 13, type: "TAXI", svgPath: "M 698 168 C 723 151, 748 133, 774 115" },
+            { from: 23, to: 22, type: "TAXI", svgPath: "M 698 168 C 668 185, 637 201, 606 218" },
+            { from: 23, to: 37, type: "TAXI", svgPath: "M 698 168 C 711 185, 724 202, 737 220" },
+            { from: 37, to: 36, type: "TAXI", svgPath: "M 737 220 C 717 238, 689 248, 677 274" },
+            { from: 36, to: 35, type: "TAXI", svgPath: "M 677 274 C 661 285, 647 250, 635 270" },
+            { from: 36, to: 49, type: "TAXI", svgPath: "M 677 274 C 689 287, 700 300, 712 314" },
+            { from: 49, to: 66, type: "TAXI", svgPath: "M 712 314 C 724 333, 736 352, 748 372" },
+            { from: 49, to: 50, type: "TAXI", svgPath: "M 712 314 C 722 283, 773 306, 777 272" },
+            { from: 37, to: 50, type: "TAXI", svgPath: "M 737 220 C 750 237, 763 254, 777 272" },
+            { from: 67, to: 66, type: "TAXI", svgPath: "M 827 357 C 801 362, 775 367, 748 372" },
+            { from: 101, to: 83, type: "TAXI", svgPath: "M 742 480 C 764 462, 802 454, 810 424" },
+            { from: 83, to: 102, type: "TAXI", svgPath: "M 810 424 C 827 427, 846 446, 863 432" },
+            { from: 126, to: 115, type: "TAXI", svgPath: "M 800 561 C 820 540, 824 507, 861 496" },
+            { from: 114, to: 115, type: "TAXI", svgPath: "M 754 529 C 789 518, 825 453, 861 496" },
+            { from: 115, to: 102, type: "TAXI", svgPath: "M 861 496 C 862 475, 822 468, 863 432" },
+            { from: 13, to: 24, type: "TAXI", svgPath: "M 774 115 C 842 101, 819 154, 842 174" },
+            { from: 37, to: 24, type: "TAXI", svgPath: "M 737 220 C 760 182, 806 190, 842 174" },
+            { from: 50, to: 38, type: "TAXI", svgPath: "M 777 272 C 803 247, 840 241, 872 225" },
+            { from: 38, to: 24, type: "TAXI", svgPath: "M 872 225 C 862 208, 852 191, 842 174" },
+            { from: 38, to: 51, type: "TAXI", svgPath: "M 872 225 C 885 245, 897 265, 910 286" },
+            { from: 51, to: 67, type: "TAXI", svgPath: "M 910 286 C 880 298, 814 285, 827 357" },
+            { from: 67, to: 68, type: "TAXI", svgPath: "M 827 357 C 857 351, 888 344, 919 338" },
+            { from: 68, to: 85, type: "TAXI", svgPath: "M 919 338 C 906 355, 924 364, 926 378" },
+            { from: 85, to: 84, type: "TAXI", svgPath: "M 926 378 C 909 385, 891 391, 873 398" },
+            { from: 84, to: 67, type: "TAXI", svgPath: "M 873 398 C 855 357, 851 375, 827 357" },
+            { from: 85, to: 103, type: "TAXI", svgPath: "M 926 378 C 930 392, 935 406, 939 420" },
+            { from: 102, to: 103, type: "TAXI", svgPath: "M 863 432 C 888 428, 910 435, 939 420" },
+            { from: 103, to: 86, type: "TAXI", svgPath: "M 939 420 C 967 409, 984 406, 1018 413" },
+            { from: 86, to: 69, type: "TAXI", svgPath: "M 1018 413 C 1013 386, 1017 355, 1004 331" },
+            { from: 68, to: 69, type: "TAXI", svgPath: "M 919 338 C 949 326, 990 359, 1004 331" },
+            { from: 51, to: 68, type: "TAXI", svgPath: "M 910 286 C 913 303, 930 318, 919 338" },
+            { from: 51, to: 52, type: "TAXI", svgPath: "M 910 286 C 932 280, 954 274, 977 268" },
+            { from: 52, to: 39, type: "TAXI", svgPath: "M 977 268 C 962 251, 950 227, 932 215" },
+            { from: 69, to: 52, type: "TAXI", svgPath: "M 1004 331 C 995 310, 986 289, 977 268" },
+            { from: 25, to: 39, type: "TAXI", svgPath: "M 904 190 C 913 198, 922 207, 932 215" },
+            { from: 39, to: 51, type: "TAXI", svgPath: "M 932 215 C 930 243, 926 262, 910 286" },
+            { from: 38, to: 25, type: "TAXI", svgPath: "M 872 225 C 883 213, 893 202, 904 190" },
+            { from: 14, to: 25, type: "TAXI", svgPath: "M 889 91 C 880 114, 846 146, 904 190" },
+            { from: 14, to: 15, type: "TAXI", svgPath: "M 889 91 C 927 88, 974 78, 1005 82" },
+            { from: 39, to: 26, type: "TAXI", svgPath: "M 932 215 C 953 184, 974 153, 996 121" },
+            { from: 26, to: 15, type: "TAXI", svgPath: "M 996 121 C 982 102, 1002 95, 1005 82" },
+            { from: 26, to: 27, type: "TAXI", svgPath: "M 996 121 C 1001 139, 1007 157, 1012 176" },
+            { from: 27, to: 40, type: "TAXI", svgPath: "M 1012 176 C 1005 210, 1042 232, 1038 261" },
+            { from: 52, to: 40, type: "TAXI", svgPath: "M 977 268 C 997 266, 1012 247, 1038 261" },
+            { from: 40, to: 53, type: "TAXI", svgPath: "M 1038 261 C 1042 277, 1046 293, 1050 310" },
+            { from: 53, to: 69, type: "TAXI", svgPath: "M 1050 310 C 1035 317, 1020 324, 1004 331" },
+            { from: 15, to: 28, type: "TAXI", svgPath: "M 1005 82 C 1021 106, 1037 130, 1054 155" },
+            { from: 28, to: 27, type: "TAXI", svgPath: "M 1054 155 C 1049 177, 1026 169, 1012 176" },
+            { from: 41, to: 28, type: "TAXI", svgPath: "M 1082 241 C 1073 213, 1064 184, 1054 155" },
+            { from: 40, to: 41, type: "TAXI", svgPath: "M 1038 261 C 1053 254, 1067 248, 1082 241" },
+            { from: 54, to: 41, type: "TAXI", svgPath: "M 1100 294 C 1094 277, 1097 262, 1082 241" },
+            { from: 53, to: 54, type: "TAXI", svgPath: "M 1050 310 C 1067 305, 1083 299, 1100 294" },
+            { from: 70, to: 54, type: "TAXI", svgPath: "M 1105 348 C 1103 330, 1102 312, 1100 294" },
+            { from: 70, to: 87, type: "TAXI", svgPath: "M 1105 348 C 1108 378, 1111 407, 1114 438" },
+            { from: 86, to: 104, type: "TAXI", svgPath: "M 1018 413 C 1018 428, 1018 443, 1018 458" },
+            { from: 87, to: 88, type: "TAXI", svgPath: "M 1114 438 C 1129 441, 1143 443, 1158 446" },
+            { from: 88, to: 89, type: "TAXI", svgPath: "M 1158 446 C 1171 435, 1183 425, 1196 414" },
+            { from: 89, to: 105, type: "TAXI", svgPath: "M 1196 414 C 1209 434, 1222 454, 1236 474" },
+            { from: 105, to: 106, type: "TAXI", svgPath: "M 1236 474 C 1263 478, 1291 482, 1319 486" },
+            { from: 106, to: 107, type: "TAXI", svgPath: "M 1319 486 C 1340 487, 1361 487, 1382 488" },
+            { from: 107, to: 91, type: "TAXI", svgPath: "M 1382 488 C 1375 465, 1368 442, 1361 418" },
+            { from: 91, to: 105, type: "TAXI", svgPath: "M 1361 418 C 1320 436, 1279 455, 1236 474" },
+            { from: 91, to: 90, type: "TAXI", svgPath: "M 1361 418 C 1328 417, 1296 415, 1262 414" },
+            { from: 90, to: 105, type: "TAXI", svgPath: "M 1262 414 C 1253 434, 1245 454, 1236 474" },
+            { from: 90, to: 72, type: "TAXI", svgPath: "M 1262 414 C 1275 396, 1288 377, 1301 358" },
+            { from: 72, to: 91, type: "TAXI", svgPath: "M 1301 358 C 1321 378, 1341 398, 1361 418" },
+            { from: 91, to: 56, type: "TAXI", svgPath: "M 1361 418 C 1430 382, 1370 343, 1374 304" },
+            { from: 72, to: 42, type: "TAXI", svgPath: "M 1301 358 C 1318 324, 1335 284, 1327 240" },
+            { from: 56, to: 42, type: "TAXI", svgPath: "M 1374 304 C 1377 269, 1343 262, 1327 240" },
+            { from: 71, to: 72, type: "TAXI", svgPath: "M 1202 350 C 1276 380, 1235 305, 1301 358" },
+            { from: 71, to: 89, type: "TAXI", svgPath: "M 1202 350 C 1200 371, 1185 390, 1196 414" },
+            { from: 71, to: 70, type: "TAXI", svgPath: "M 1202 350 C 1170 349, 1138 349, 1105 348" },
+            { from: 54, to: 55, type: "TAXI", svgPath: "M 1100 294 C 1139 293, 1155 272, 1217 291" },
+            { from: 55, to: 71, type: "TAXI", svgPath: "M 1217 291 C 1212 310, 1207 330, 1202 350" },
+            { from: 42, to: 30, type: "TAXI", svgPath: "M 1327 240 C 1339 220, 1396 230, 1364 179" },
+            { from: 42, to: 29, type: "TAXI", svgPath: "M 1327 240 C 1289 223, 1276 169, 1212 188" },
+            { from: 29, to: 17, type: "TAXI", svgPath: "M 1212 188 C 1248 178, 1285 168, 1322 158" },
+            { from: 17, to: 7, type: "TAXI", svgPath: "M 1322 158 C 1325 128, 1334 98, 1330 66" },
+            { from: 17, to: 30, type: "TAXI", svgPath: "M 1322 158 C 1336 165, 1350 172, 1364 179" },
+            { from: 7, to: 6, type: "TAXI", svgPath: "M 1330 66 C 1292 30, 1243 45, 1213 57" },
+            { from: 6, to: 29, type: "TAXI", svgPath: "M 1213 57 C 1224 97, 1203 140, 1212 188" },
+            { from: 29, to: 41, type: "TAXI", svgPath: "M 1212 188 C 1166 200, 1121 208, 1082 241" },
+            { from: 16, to: 29, type: "TAXI", svgPath: "M 1116 123 C 1148 144, 1206 144, 1212 188" },
+            { from: 16, to: 28, type: "TAXI", svgPath: "M 1116 123 C 1096 134, 1075 144, 1054 155" },
+            { from: 16, to: 5, type: "TAXI", svgPath: "M 1116 123 C 1117 94, 1100 80, 1091 58" },
+            { from: 5, to: 15, type: "TAXI", svgPath: "M 1091 58 C 1063 66, 1004 6, 1005 82" },
+            { from: 126, to: 127, type: "TAXI", svgPath: "M 800 561 C 842 571, 901 614, 926 590" },
+            { from: 127, to: 115, type: "TAXI", svgPath: "M 926 590 C 905 559, 883 528, 861 496" },
+            { from: 116, to: 104, type: "TAXI", svgPath: "M 1021 551 C 1020 520, 1019 490, 1018 458" },
+            { from: 105, to: 108, type: "TAXI", svgPath: "M 1236 474 C 1230 505, 1223 536, 1217 568" },
+            { from: 119, to: 107, type: "TAXI", svgPath: "M 1355 637 C 1364 588, 1423 519, 1382 488" },
+            { from: 119, to: 108, type: "TAXI", svgPath: "M 1355 637 C 1309 614, 1262 565, 1217 568" },
+            { from: 108, to: 117, type: "TAXI", svgPath: "M 1217 568 C 1195 620, 1160 585, 1130 593" },
+            { from: 117, to: 88, type: "TAXI", svgPath: "M 1130 593 C 1134 545, 1148 496, 1158 446" },
+            { from: 117, to: 116, type: "TAXI", svgPath: "M 1130 593 C 1094 579, 1058 565, 1021 551" },
+            { from: 116, to: 127, type: "TAXI", svgPath: "M 1021 551 C 983 549, 958 577, 926 590" },
+            { from: 127, to: 133, type: "TAXI", svgPath: "M 926 590 C 910 618, 885 629, 877 674" },
+            { from: 133, to: 140, type: "TAXI", svgPath: "M 877 674 C 837 677, 796 663, 757 682" },
+            { from: 156, to: 157, type: "TAXI", svgPath: "M 774 796 C 795 797, 817 799, 839 800" },
+            { from: 184, to: 185, type: "TAXI", svgPath: "M 732 909 C 757 926, 782 944, 808 962" },
+            { from: 185, to: 170, type: "TAXI", svgPath: "M 808 962 C 813 911, 823 893, 830 858" },
+            { from: 170, to: 157, type: "TAXI", svgPath: "M 830 858 C 833 839, 836 820, 839 800" },
+            { from: 157, to: 158, type: "TAXI", svgPath: "M 839 800 C 875 785, 911 771, 948 756" },
+            { from: 158, to: 141, type: "TAXI", svgPath: "M 948 756 C 935 737, 941 706, 910 697" },
+            { from: 133, to: 141, type: "TAXI", svgPath: "M 877 674 C 888 682, 899 689, 910 697" },
+            { from: 170, to: 159, type: "TAXI", svgPath: "M 830 858 C 870 848, 911 890, 953 906" },
+            { from: 185, to: 186, type: "TAXI", svgPath: "M 808 962 C 836 956, 865 950, 894 944" },
+            { from: 186, to: 198, type: "TAXI", svgPath: "M 894 944 C 888 994, 930 974, 950 1031" },
+            { from: 186, to: 159, type: "TAXI", svgPath: "M 894 944 C 913 931, 936 963, 953 906" },
+            { from: 159, to: 198, type: "TAXI", svgPath: "M 953 906 C 928 951, 984 984, 950 1031" },
+            { from: 159, to: 158, type: "TAXI", svgPath: "M 953 906 C 951 857, 960 809, 948 756" },
+            { from: 159, to: 172, type: "TAXI", svgPath: "M 953 906 C 986 888, 1019 848, 1054 851" },
+            { from: 198, to: 187, type: "TAXI", svgPath: "M 950 1031 C 972 992, 995 954, 1018 914" },
+            { from: 198, to: 199, type: "TAXI", svgPath: "M 950 1031 C 998 1082, 1098 1046, 1159 1025" },
+            { from: 187, to: 188, type: "TAXI", svgPath: "M 1018 914 C 1094 990, 1101 916, 1143 917" },
+            { from: 187, to: 172, type: "TAXI", svgPath: "M 1018 914 C 1030 893, 1042 872, 1054 851" },
+            { from: 172, to: 128, type: "TAXI", svgPath: "M 1054 851 C 1065 827, 1076 803, 1087 778" },
+            { from: 128, to: 142, type: "TAXI", svgPath: "M 1087 778 C 1066 758, 1044 738, 1022 718" },
+            { from: 142, to: 158, type: "TAXI", svgPath: "M 1022 718 C 999 738, 973 743, 948 756" },
+            { from: 142, to: 141, type: "TAXI", svgPath: "M 1022 718 C 985 711, 948 704, 910 697" },
+            { from: 142, to: 134, type: "TAXI", svgPath: "M 1022 718 C 1003 694, 984 670, 964 646" },
+            { from: 134, to: 127, type: "TAXI", svgPath: "M 964 646 C 951 628, 939 609, 926 590" },
+            { from: 134, to: 141, type: "TAXI", svgPath: "M 964 646 C 946 663, 917 671, 910 697" },
+            { from: 134, to: 118, type: "TAXI", svgPath: "M 964 646 C 983 636, 998 613, 1022 617" },
+            { from: 118, to: 116, type: "TAXI", svgPath: "M 1022 617 C 1022 595, 1021 573, 1021 551" },
+            { from: 118, to: 142, type: "TAXI", svgPath: "M 1022 617 C 1022 650, 1022 684, 1022 718" },
+            { from: 142, to: 143, type: "TAXI", svgPath: "M 1022 718 C 1058 699, 1089 708, 1124 703" },
+            { from: 128, to: 143, type: "TAXI", svgPath: "M 1087 778 C 1099 753, 1094 722, 1124 703" },
+            { from: 129, to: 142, type: "TAXI", svgPath: "M 1122 630 C 1078 699, 1108 708, 1022 718" },
+            { from: 129, to: 143, type: "TAXI", svgPath: "M 1122 630 C 1123 654, 1053 710, 1124 703" },
+            { from: 129, to: 135, type: "TAXI", svgPath: "M 1122 630 C 1131 654, 1150 654, 1164 666" },
+            { from: 143, to: 135, type: "TAXI", svgPath: "M 1124 703 C 1137 691, 1150 679, 1164 666" },
+            { from: 129, to: 117, type: "TAXI", svgPath: "M 1122 630 C 1125 618, 1127 606, 1130 593" },
+            { from: 129, to: 118, type: "TAXI", svgPath: "M 1122 630 C 1089 626, 1059 614, 1022 617" },
+            { from: 119, to: 136, type: "TAXI", svgPath: "M 1355 637 C 1344 667, 1334 697, 1323 728" },
+            { from: 136, to: 135, type: "TAXI", svgPath: "M 1323 728 C 1269 722, 1205 642, 1164 666" },
+            { from: 135, to: 161, type: "TAXI", svgPath: "M 1164 666 C 1187 716, 1219 757, 1261 787" },
+            { from: 143, to: 160, type: "TAXI", svgPath: "M 1124 703 C 1139 734, 1187 762, 1170 796" },
+            { from: 128, to: 160, type: "TAXI", svgPath: "M 1087 778 C 1114 784, 1142 790, 1170 796" },
+            { from: 128, to: 188, type: "TAXI", svgPath: "M 1087 778 C 1086 832, 1136 859, 1143 917" },
+            { from: 188, to: 199, type: "TAXI", svgPath: "M 1143 917 C 1148 953, 1175 975, 1159 1025" },
+            { from: 199, to: 171, type: "TAXI", svgPath: "M 1159 1025 C 1185 1018, 1218 1019, 1237 1004" },
+            { from: 171, to: 173, type: "TAXI", svgPath: "M 1237 1004 C 1223 968, 1209 932, 1195 895" },
+            { from: 188, to: 173, type: "TAXI", svgPath: "M 1143 917 C 1160 910, 1177 902, 1195 895" },
+            { from: 173, to: 160, type: "TAXI", svgPath: "M 1195 895 C 1206 837, 1163 831, 1170 796" },
+            { from: 173, to: 174, type: "TAXI", svgPath: "M 1195 895 C 1230 866, 1285 896, 1313 860" },
+            { from: 171, to: 175, type: "TAXI", svgPath: "M 1237 1004 C 1283 973, 1351 965, 1375 909" },
+            { from: 174, to: 175, type: "TAXI", svgPath: "M 1313 860 C 1333 876, 1352 893, 1375 909" },
+            { from: 162, to: 175, type: "TAXI", svgPath: "M 1390 789 C 1426 826, 1341 876, 1375 909" },
+            { from: 162, to: 136, type: "TAXI", svgPath: "M 1390 789 C 1368 769, 1307 758, 1323 728" },
+            { from: 160, to: 161, type: "TAXI", svgPath: "M 1170 796 C 1200 793, 1230 790, 1261 787" },
+            { from: 161, to: 174, type: "TAXI", svgPath: "M 1261 787 C 1278 811, 1295 835, 1313 860" }
+        ].map((l, index) => {
+            l.id = index + 1; // Donne un ID unique à chaque ligne
+            const parts = l.svgPath ? l.svgPath.match(/C\s+(\d+)\s+(\d+),\s+(\d+)\s+(\d+)/) : null;
+            if(parts) { l.cx1 = parseInt(parts[1]); l.cy1 = parseInt(parts[2]); l.cx2 = parseInt(parts[3]); l.cy2 = parseInt(parts[4]); }
+            return l;
+        });
+        let currentStationId = 200;
+        let selectedNode = null;
+        let draggedHandle = null;
+        let actionHistory = [];
+
+        const COLORS = { 'TAXI': '#ffffff', 'BUS': '#555FB5', 'UNDERGROUND': '#e74c3c' };
+
+        function updateSize() {
+            const w = document.getElementById('img-w').value;
+            const h = document.getElementById('img-h').value;
+            svg.setAttribute('width', w); svg.setAttribute('height', h);
+            document.getElementById('bg-image').setAttribute('width', w);
+            document.getElementById('bg-image').setAttribute('height', h);
+        }
+
+        function setMode(newMode) {
+            mode = newMode;
+            document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
+            if (mode === 'node') {
+                document.getElementById('btn-node').classList.add('active');
+                document.getElementById('instructions').innerHTML = "<b>Mode Station :</b> Clique sur la carte pour placer la station N°" + currentStationId;
+            } else {
+                document.getElementById('btn-' + mode.toLowerCase().split('u')[0]).classList.add('active'); // Astuce sélecteur
+                document.getElementById('instructions').innerHTML = `<b>Mode ${mode} :</b> Clique sur une station A, puis une station B pour les relier.<br><br><i>Astuce : Tire sur le petit carré au milieu de la ligne pour la courber !</i>`;
+            }
+            selectedNode = null;
+            render();
+        }
+
+        // --- GESTION DES CLICS SUR LA CARTE ---
+        svg.addEventListener('pointerdown', (e) => {
+            const rect = svg.getBoundingClientRect();
+            const x = Math.round(e.clientX - rect.left);
+            const y = Math.round(e.clientY - rect.top);
+
+            // 1. Si on a cliqué sur une poignée de courbure
+            if (e.target.classList.contains('curve-handle')) {
+                draggedHandle = {
+                    link: links.find(l => l.id === parseInt(e.target.dataset.id)),
+                    index: parseInt(e.target.dataset.handle)
+                };
+                svg.setPointerCapture(e.pointerId);
+                return;
+            }
+
+            // 2. Si on a cliqué sur une station existante
+            if (e.target.classList.contains('station-node')) {
+                const clickedNode = nodes.find(n => n.id === parseInt(e.target.dataset.id));
+                if (mode !== 'node') {
+                    if (!selectedNode) {
+                        selectedNode = clickedNode; // On sélectionne la première station
+                    } else {
+                        if (selectedNode.id !== clickedNode.id) {
+                            // On crée le lien avec DEUX points de contrôle (courbe de Bézier cubique) au 1/3 et 2/3
+                            const cx1 = Math.round(selectedNode.x + (clickedNode.x - selectedNode.x) * 0.33);
+                            const cy1 = Math.round(selectedNode.y + (clickedNode.y - selectedNode.y) * 0.33);
+                            const cx2 = Math.round(selectedNode.x + (clickedNode.x - selectedNode.x) * 0.66);
+                            const cy2 = Math.round(selectedNode.y + (clickedNode.y - selectedNode.y) * 0.66);
+                            links.push({ id: links.length + 1, from: selectedNode.id, to: clickedNode.id, type: mode, cx1, cy1, cx2, cy2 });
+                            actionHistory.push('link');
+                        }
+                        selectedNode = null; // On désélectionne après avoir relié
+                    }
+                    render();
+                }
+                return;
+            }
+
+            // 3. Si on clique dans le vide en mode "Station"
+            if (mode === 'node') {
+                nodes.push({ id: currentStationId, x: x, y: y });
+                currentStationId++;
+                actionHistory.push('node');
+                document.getElementById('instructions').innerHTML = "<b>Mode Station :</b> Clique sur la carte pour placer la station N°" + currentStationId;
+                render();
+            } else {
+                selectedNode = null;
+                render();
+            }
+        });
+
+        // --- GESTION DU GLISSER-DÉPOSER POUR COURBER LES LIGNES ---
+        svg.addEventListener('pointermove', (e) => {
+            if (draggedHandle) {
+                const rect = svg.getBoundingClientRect();
+                if (draggedHandle.index === 1) {
+                    draggedHandle.link.cx1 = Math.round(e.clientX - rect.left);
+                    draggedHandle.link.cy1 = Math.round(e.clientY - rect.top);
+                } else {
+                    draggedHandle.link.cx2 = Math.round(e.clientX - rect.left);
+                    draggedHandle.link.cy2 = Math.round(e.clientY - rect.top);
+                }
+                render();
+            }
+        });
+
+        svg.addEventListener('pointerup', () => { draggedHandle = null; });
+
+        // --- ANNULATION (UNDO) ---
+        function undo() {
+            const lastAction = actionHistory.pop();
+            if (lastAction === 'node') {
+                nodes.pop();
+                currentStationId--;
+                document.getElementById('instructions').innerHTML = "<b>Mode Station :</b> Clique sur la carte pour placer la station N°" + currentStationId;
+            } else if (lastAction === 'link') {
+                links.pop();
+            } else { return; }
+            selectedNode = null;
+            render();
+        }
+        document.addEventListener('keydown', (e) => { if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); } });
+
+        // --- RENDU VISUEL ---
+        function render() {
+            nodesLayer.innerHTML = '';
+            linksLayer.innerHTML = '';
+            handlesLayer.innerHTML = '';
+
+            // Dessine les lignes
+            const showTaxi = document.getElementById('show-taxi')?.checked;
+            const showBus = document.getElementById('show-bus')?.checked;
+            const showMetro = document.getElementById('show-metro')?.checked;
+
+            links.forEach(l => {
+                if (l.type === 'TAXI' && !showTaxi) return;
+                if (l.type === 'BUS' && !showBus) return;
+                if (l.type === 'UNDERGROUND' && !showMetro) return;
+
+                const n1 = nodes.find(n => n.id === l.from);
+                const n2 = nodes.find(n => n.id === l.to);
+                if (!n1 || !n2) return;
+
+                // Path SVG avec Courbe de Bézier Cubique (C)
+                const pathStr = `M ${n1.x} ${n1.y} C ${l.cx1} ${l.cy1}, ${l.cx2} ${l.cy2}, ${n2.x} ${n2.y}`;
+                
+                const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                path.setAttribute("d", pathStr);
+                path.setAttribute("fill", "none");
+                path.setAttribute("stroke", COLORS[l.type]);
+                path.setAttribute("stroke-width", l.type === 'UNDERGROUND' ? "8" : (l.type === 'BUS' ? "5" : "2"));
+                path.setAttribute("opacity", "0.7");
+                linksLayer.appendChild(path);
+
+                // Dessine les 2 poignées de courbure (uniquement visibles si on est dans un mode Route)
+                if (mode !== 'node') {
+                    const createHandle = (cx, cy, index) => {
+                        const handle = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+                        handle.setAttribute("x", cx - 6); handle.setAttribute("y", cy - 6);
+                        handle.setAttribute("width", "12"); handle.setAttribute("height", "12");
+                        handle.setAttribute("fill", index === 1 ? "#f39c12" : "#e67e22"); // Différence de couleur subtile
+                        handle.setAttribute("cursor", "move");
+                        handle.setAttribute("class", "curve-handle");
+                        handle.dataset.id = l.id;
+                        handle.dataset.handle = index;
+                        handlesLayer.appendChild(handle);
+                    };
+                    createHandle(l.cx1, l.cy1, 1);
+                    createHandle(l.cx2, l.cy2, 2);
+                }
+            });
+
+            // Dessine les stations
+            nodes.forEach(n => {
+                const isSelected = selectedNode && selectedNode.id === n.id;
+                
+                const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                circle.setAttribute("cx", n.x); circle.setAttribute("cy", n.y);
+                circle.setAttribute("r", isSelected ? "15" : "10");
+                circle.setAttribute("fill", isSelected ? "#f1c40f" : "#2ecc71");
+                circle.setAttribute("class", "station-node");
+                circle.setAttribute("cursor", "pointer");
+                circle.dataset.id = n.id;
+                nodesLayer.appendChild(circle);
+
+                const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                text.setAttribute("x", n.x); text.setAttribute("y", n.y + 4);
+                text.setAttribute("text-anchor", "middle");
+                text.setAttribute("fill", "black");
+                text.setAttribute("font-size", "12px");
+                text.setAttribute("font-weight", "bold");
+                text.setAttribute("pointer-events", "none");
+                text.textContent = n.id;
+                nodesLayer.appendChild(text);
+            });
+        }
+        
+        window.onload = render; // Charge tes stations dès l'ouverture !
+
+        // --- GÉNÉRATION DU CODE FINAL ---
+        function exportData() {
+            let out = "// --- À COPIER-COLLER DANS data.js ---\n\n";
+            out += "const MAP = {\n    nodes: [\n";
+            
+            // Formatage des stations
+            nodes.forEach(n => {
+                out += `        { id: ${n.id}, x: ${n.x}, y: ${n.y} },\n`;
+            });
+            out += "    ],\n    links: [\n";
+
+            // Formatage des liens avec le svgPath
+            links.forEach(l => {
+                const n1 = nodes.find(n => n.id === l.from);
+                const n2 = nodes.find(n => n.id === l.to);
+                const pathStr = `M ${n1.x} ${n1.y} C ${l.cx1} ${l.cy1}, ${l.cx2} ${l.cy2}, ${n2.x} ${n2.y}`;
+                out += `        { from: ${l.from}, to: ${l.to}, type: "${l.type}", svgPath: "${pathStr}" },\n`;
+            });
+            out += "    ]\n};\n";
+
+            document.getElementById('output').value = out;
+            alert("Code généré en bas à gauche ! Copie-le dans ton fichier data.js.");
+        }
+    </script>
+</body>
+</html>
